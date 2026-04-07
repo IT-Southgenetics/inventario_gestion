@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { createClient } from "@/lib/supabase/client";
+import { isMultiCountryUserProfile } from "@/lib/multi-country-user";
 import { useRouter } from "next/navigation";
 
 const COUNTRIES = [
@@ -32,11 +33,11 @@ export function CountrySelector() {
       if (user) {
         const { data: profile } = await supabase
           .from("profiles")
-          .select("email, country_code")
+          .select("email, country_code, role")
           .eq("id", user.id)
           .single();
 
-        if (profile?.email === "nvila@southgenetics.com") {
+        if (profile && isMultiCountryUserProfile(profile)) {
           setIsMultiCountry(true);
           // Obtener país seleccionado del localStorage o usar el país del perfil
           const savedCountry =

@@ -19,6 +19,7 @@ import { inviteUser } from "@/actions/auth";
 import { createClient } from "@/lib/supabase/client";
 import toast from "react-hot-toast";
 import type { Profile } from "@/types/database";
+import { isMultiCountryUserProfile } from "@/lib/multi-country-user";
 
 export default function UsersPage() {
   const [isLoading, setIsLoading] = useState(false);
@@ -60,8 +61,7 @@ export default function UsersPage() {
     // Guardar el rol del usuario
     setUserRole(profile.role || "VIEWER");
     
-    // Verificar si es usuario multi-país
-    setIsMultiCountry(profile.email === "nvila@southgenetics.com");
+    setIsMultiCountry(isMultiCountryUserProfile(profile));
 
     // Obtener usuarios de la misma organización y país
     // Si es usuario multi-país, mostrar solo usuarios del país seleccionado

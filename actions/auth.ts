@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { UserRole } from "@/types/database";
+import { isMultiCountryUserProfile } from "@/lib/multi-country-user";
 
 export async function login(formData: FormData) {
   const email = formData.get("email") as string;
@@ -78,10 +79,9 @@ export async function inviteUser(formData: FormData) {
   }
 
   // Determinar el country_code a usar
-  // Si el usuario es multi-país (nvila@southgenetics.com), puede especificar el país
-  // Si no, usa el país del usuario que invita
+  // Admins (y nvila legacy) pueden elegir país al invitar; el resto hereda su país
   let finalCountryCode: string;
-  const isMultiCountry = profile.email === "nvila@southgenetics.com";
+  const isMultiCountry = isMultiCountryUserProfile(profile);
   
   if (isMultiCountry && countryCode) {
     // Usuario multi-país puede especificar el país

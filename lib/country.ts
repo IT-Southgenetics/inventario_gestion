@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { isMultiCountryUserProfile } from "@/lib/multi-country-user";
 
 /**
  * Obtiene el country_code del usuario actual
@@ -43,11 +44,11 @@ export async function isMultiCountryUser(): Promise<boolean> {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("email")
+    .select("email, role")
     .eq("id", user.id)
     .single();
 
-  return profile?.email === "nvila@southgenetics.com";
+  return profile ? isMultiCountryUserProfile(profile) : false;
 }
 
 /**
