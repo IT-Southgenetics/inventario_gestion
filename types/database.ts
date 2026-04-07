@@ -23,7 +23,9 @@ export interface Supplier {
   name: string;
   contact_email: string | null;
   phone: string | null;
+  tax_id: string | null;
   organization_id: string;
+  country_code: string;
   created_at: string;
   updated_at: string;
 }

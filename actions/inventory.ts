@@ -9,6 +9,7 @@ const supplierSchema = z.object({
   name: z.string().min(1, "El nombre es requerido"),
   contact_email: z.string().email("Email inválido").optional().or(z.literal("")),
   phone: z.string().optional(),
+  tax_id: z.string().optional(),
 });
 
 const categorySchema = z.object({
@@ -113,6 +114,7 @@ export async function createSupplier(formData: FormData) {
       name: formData.get("name") as string,
       contact_email: formData.get("contact_email") as string,
       phone: formData.get("phone") as string,
+      tax_id: formData.get("tax_id") as string,
     };
 
     const validatedData = supplierSchema.parse(rawData);
@@ -126,6 +128,7 @@ export async function createSupplier(formData: FormData) {
         country_code: profile.country_code || "MX",
         contact_email: validatedData.contact_email || null,
         phone: validatedData.phone || null,
+        tax_id: validatedData.tax_id || null,
       })
       .select()
       .single();

@@ -10,6 +10,7 @@ import {
   Edit,
   Trash2,
   MoreHorizontal,
+  Hash,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +43,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { createSupplier } from "@/actions/inventory";
 import { createClient } from "@/lib/supabase/client";
+import { getTaxIdLabel, getTaxIdPlaceholder, formatCUIT } from "@/lib/countries";
 import toast from "react-hot-toast";
 import type { Supplier } from "@/types/database";
 
@@ -50,6 +52,8 @@ export default function SuppliersPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [countryCode, setCountryCode] = useState<string>("MX");
+  const [taxIdValue, setTaxIdValue] = useState("");
 
   useEffect(() => {
     loadSuppliers();
@@ -78,13 +82,14 @@ export default function SuppliersPage() {
       return;
     }
 
-    const countryCode = profile.country_code || "MX";
+    const currentCountry = profile.country_code || "MX";
+    setCountryCode(currentCountry);
 
     const { data: suppliersData, error } = await supabase
       .from("suppliers")
       .select("*")
       .eq("organization_id", profile.organization_id)
-      .eq("country_code", countryCode)
+      .eq("country_code", currentCountry)
       .order("name", { ascending: true });
 
     if (error) {
@@ -112,9 +117,22 @@ export default function SuppliersPage() {
       toast.success(result.message || "Proveedor creado correctamente");
       setIsDialogOpen(false);
       setIsSubmitting(false);
+      setTaxIdValue("");
       await loadSuppliers();
     }
   }
+
+  // Formatear tax_id según el país al escribir
+  function handleTaxIdChange(value: string) {
+    if (countryCode === "AR") {
+      setTaxIdValue(formatCUIT(value));
+    } else {
+      setTaxIdValue(value);
+    }
+  }
+
+  const taxIdLabel = getTaxIdLabel(countryCode);
+  const taxIdPlaceholder = getTaxIdPlaceholder(countryCode);
 
   return (
     <div className="container mx-auto px-4 py-6 space-y-6">
@@ -130,7 +148,10 @@ export default function SuppliersPage() {
             Gestiona tus proveedores y laboratorios
           </p>
         </div>
-        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+        <Dialog open={isDialogOpen} onOpenChange={(open) => {
+          setIsDialogOpen(open);
+          if (!open) setTaxIdValue("");
+        }}>
           <DialogTrigger asChild>
             <Button className="bg-teal-600 hover:bg-teal-700">
               <Plus className="mr-2 h-4 w-4" />
@@ -175,6 +196,21 @@ export default function SuppliersPage() {
                     placeholder="+1 234 567 8900"
                     disabled={isSubmitting}
                   />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="tax_id">{taxIdLabel}</Label>
+                  <div className="relative">
+                    <Hash className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-slate-400" />
+                    <Input
+                      id="tax_id"
+                      name="tax_id"
+                      placeholder={taxIdPlaceholder}
+                      disabled={isSubmitting}
+                      className="pl-9"
+                      value={taxIdValue}
+                      onChange={(e) => handleTaxIdChange(e.target.value)}
+                    />
+                  </div>
                 </div>
               </div>
               <DialogFooter>
@@ -239,6 +275,7 @@ export default function SuppliersPage() {
                       <TableHead>Nombre</TableHead>
                       <TableHead>Email</TableHead>
                       <TableHead>Teléfono</TableHead>
+                      <TableHead>{taxIdLabel}</TableHead>
                       <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -266,6 +303,16 @@ export default function SuppliersPage() {
                             <div className="flex items-center gap-2 text-slate-600">
                               <Phone className="h-4 w-4" />
                               {supplier.phone}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {supplier.tax_id ? (
+                            <div className="flex items-center gap-2 text-slate-600">
+                              <Hash className="h-4 w-4" />
+                              {supplier.tax_id}
                             </div>
                           ) : (
                             <span className="text-slate-400">-</span>
@@ -306,6 +353,3 @@ export default function SuppliersPage() {
     </div>
   );
 }
-
-
-

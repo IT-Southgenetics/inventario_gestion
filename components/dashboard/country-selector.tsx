@@ -9,14 +9,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { CountryFlag } from "@/components/ui/country-flag";
+import { COUNTRIES } from "@/lib/countries";
 import { createClient } from "@/lib/supabase/client";
 import { isMultiCountryUserProfile } from "@/lib/multi-country-user";
 import { useRouter } from "next/navigation";
-
-const COUNTRIES = [
-  { code: "MX", name: "México", flag: "🇲🇽" },
-  { code: "UY", name: "Uruguay", flag: "🇺🇾" },
-];
 
 export function CountrySelector() {
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
@@ -58,8 +55,6 @@ export function CountrySelector() {
     localStorage.setItem("selected_country", countryCode);
 
     // Actualizar el country_code en el perfil
-    // Esto permite que las políticas RLS usen el país correcto para INSERT/UPDATE
-    // Las políticas SELECT siguen permitiendo ver todos los países para este usuario
     const supabase = createClient();
     const {
       data: { user },
@@ -95,10 +90,10 @@ export function CountrySelector() {
           className="w-full justify-start gap-2 text-sm"
         >
           <Globe className="h-4 w-4" />
-          <span className="flex-1 text-left">
+          <span className="flex-1 text-left flex items-center gap-2">
             {currentCountry ? (
               <>
-                <span className="mr-2">{currentCountry.flag}</span>
+                <CountryFlag countryCode={currentCountry.code} size="sm" />
                 {currentCountry.name}
               </>
             ) : (
@@ -114,7 +109,7 @@ export function CountrySelector() {
             onClick={() => handleCountryChange(country.code)}
             className={selectedCountry === country.code ? "bg-teal-50" : ""}
           >
-            <span className="mr-2">{country.flag}</span>
+            <CountryFlag countryCode={country.code} size="sm" className="mr-2" />
             {country.name}
             {selectedCountry === country.code && (
               <span className="ml-auto text-teal-600">✓</span>

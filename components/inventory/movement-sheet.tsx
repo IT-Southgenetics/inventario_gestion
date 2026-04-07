@@ -11,6 +11,9 @@ import {
   Hash,
   AlertTriangle,
   FileText,
+  Calculator,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +35,12 @@ import {
 } from "@/components/ui/sheet";
 import { registerMovement } from "@/actions/inventory";
 import { createClient } from "@/lib/supabase/client";
+import {
+  formatARS,
+  calcularImpuestoPAIS,
+  calcularPercepcionGanancias,
+  AR_TAXES,
+} from "@/lib/countries";
 import toast from "react-hot-toast";
 import type { Product, Supplier } from "@/types/database";
 
@@ -54,6 +63,7 @@ export function MovementSheet({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [isLoadingSuppliers, setIsLoadingSuppliers] = useState(false);
+  const [countryCode, setCountryCode] = useState<string>("MX");
 
   // Form state
   const [productId, setProductId] = useState("");
@@ -63,6 +73,11 @@ export function MovementSheet({
   const [supplierId, setSupplierId] = useState("");
   const [recipient, setRecipient] = useState("");
   const [notes, setNotes] = useState("");
+
+  // Calculadora AR
+  const [showArCalculator, setShowArCalculator] = useState(false);
+  const [precioBase, setPrecioBase] = useState("");
+  const [incluirPercepcion, setIncluirPercepcion] = useState(true);
 
   useEffect(() => {
     if (open && movementType === "Entrada") {
@@ -93,13 +108,15 @@ export function MovementSheet({
       return;
     }
 
-    const countryCode = profile.country_code || "MX";
+    setCountryCode(profile.country_code || "MX");
+
+    const countryCodeValue = profile.country_code || "MX";
 
     const { data: suppliersData } = await supabase
       .from("suppliers")
       .select("*")
       .eq("organization_id", profile.organization_id)
-      .eq("country_code", countryCode)
+      .eq("country_code", countryCodeValue)
       .order("name", { ascending: true });
 
     setSuppliers(suppliersData || []);
@@ -114,6 +131,8 @@ export function MovementSheet({
     setSupplierId("");
     setRecipient("");
     setNotes("");
+    setPrecioBase("");
+    setShowArCalculator(false);
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -152,6 +171,16 @@ export function MovementSheet({
     selectedProduct &&
     (selectedProduct.current_stock || selectedProduct.stock || 0) <=
       (selectedProduct.min_stock || 0);
+
+  // Cálculos impositivos AR
+  const baseNum = parseFloat(precioBase) || 0;
+  const impuestoPAIS = calcularImpuestoPAIS(baseNum);
+  const percepcionGanancias = incluirPercepcion
+    ? calcularPercepcionGanancias(baseNum)
+    : 0;
+  const totalAR = baseNum + impuestoPAIS + percepcionGanancias;
+
+  const isAR = countryCode === "AR";
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -326,6 +355,103 @@ export function MovementSheet({
                     />
                   </div>
                 </div>
+
+                {/* Calculadora de impuestos Argentina */}
+                {isAR && (
+                  <div className="rounded-lg border border-sky-200 bg-sky-50 overflow-hidden">
+                    <button
+                      type="button"
+                      className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-sky-800 hover:bg-sky-100 transition-colors"
+                      onClick={() => setShowArCalculator(!showArCalculator)}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Calculator className="h-4 w-4" />
+                        Calculadora de costos (ARS)
+                      </span>
+                      {showArCalculator ? (
+                        <ChevronUp className="h-4 w-4" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4" />
+                      )}
+                    </button>
+
+                    {showArCalculator && (
+                      <div className="px-4 pb-4 space-y-3 border-t border-sky-200">
+                        <p className="text-xs text-sky-600 pt-3">
+                          Herramienta informativa. No afecta el registro del movimiento.
+                        </p>
+
+                        {/* Precio base */}
+                        <div className="space-y-1">
+                          <Label htmlFor="precio_base" className="text-xs text-sky-800">
+                            Precio unitario base (ARS)
+                          </Label>
+                          <Input
+                            id="precio_base"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={precioBase}
+                            onChange={(e) => setPrecioBase(e.target.value)}
+                            className="h-9 bg-white text-sm"
+                            placeholder="0.00"
+                          />
+                        </div>
+
+                        {/* Toggle Percepción de Ganancias */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={incluirPercepcion}
+                            onChange={(e) => setIncluirPercepcion(e.target.checked)}
+                            className="rounded border-sky-300 text-sky-600"
+                          />
+                          <span className="text-xs text-sky-800">
+                            Incluir Percepción de Ganancias ({(AR_TAXES.percepcionGanancias * 100).toFixed(0)}%)
+                          </span>
+                        </label>
+
+                        {/* Desglose */}
+                        {baseNum > 0 && (
+                          <div className="rounded-md bg-white border border-sky-200 divide-y divide-sky-100 text-sm">
+                            <div className="flex justify-between px-3 py-2">
+                              <span className="text-slate-600">Precio base</span>
+                              <span className="font-medium">{formatARS(baseNum)}</span>
+                            </div>
+                            <div className="flex justify-between px-3 py-2">
+                              <span className="text-slate-600">
+                                Impuesto PAIS ({(AR_TAXES.impuestoPAIS * 100).toFixed(0)}%)
+                              </span>
+                              <span className="text-orange-600">+ {formatARS(impuestoPAIS)}</span>
+                            </div>
+                            {incluirPercepcion && (
+                              <div className="flex justify-between px-3 py-2">
+                                <span className="text-slate-600">
+                                  Percepción Ganancias ({(AR_TAXES.percepcionGanancias * 100).toFixed(0)}%)
+                                </span>
+                                <span className="text-orange-600">+ {formatARS(percepcionGanancias)}</span>
+                              </div>
+                            )}
+                            <div className="flex justify-between px-3 py-2 bg-sky-50 font-semibold">
+                              <span className="text-sky-800">Total estimado</span>
+                              <span className="text-sky-800">{formatARS(totalAR)}</span>
+                            </div>
+                            {quantity && (
+                              <div className="flex justify-between px-3 py-2 bg-sky-100 font-semibold">
+                                <span className="text-sky-900">
+                                  Total x {quantity} unidad{parseInt(quantity) !== 1 ? "es" : ""}
+                                </span>
+                                <span className="text-sky-900">
+                                  {formatARS(totalAR * (parseFloat(quantity) || 0))}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             )}
 
@@ -346,7 +472,6 @@ export function MovementSheet({
                     />
                   </div>
                 </div>
-                {/* Comentarios para Salida - Recomendado */}
                 <div className="space-y-2">
                   <Label htmlFor="notes">
                     Comentarios / Notas{" "}
@@ -421,4 +546,3 @@ export function MovementSheet({
     </Sheet>
   );
 }
-
