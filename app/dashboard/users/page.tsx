@@ -15,11 +15,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { CountryFlag } from "@/components/ui/country-flag";
+import { COUNTRIES, getCountry } from "@/lib/countries";
 import { inviteUser } from "@/actions/auth";
 import { createClient } from "@/lib/supabase/client";
 import toast from "react-hot-toast";
 import type { Profile } from "@/types/database";
 import { isMultiCountryUserProfile } from "@/lib/multi-country-user";
+
+function getCountryName(code: string): string {
+  return getCountry(code)?.name ?? code;
+}
 
 export default function UsersPage() {
   const [isLoading, setIsLoading] = useState(false);
@@ -60,11 +66,10 @@ export default function UsersPage() {
 
     // Guardar el rol del usuario
     setUserRole(profile.role || "VIEWER");
-    
+
     setIsMultiCountry(isMultiCountryUserProfile(profile));
 
     // Obtener usuarios de la misma organización y país
-    // Si es usuario multi-país, mostrar solo usuarios del país seleccionado
     const countryCode = profile.country_code || "MX";
     const { data: orgUsers, error } = await supabase
       .from("profiles")
@@ -80,8 +85,6 @@ export default function UsersPage() {
       return;
     }
 
-    // Asegurarse de que se muestren todos los usuarios encontrados
-    console.log(`Usuarios encontrados en la organización: ${orgUsers?.length || 0}`);
     setUsers(orgUsers || []);
     setIsLoadingUsers(false);
   }
@@ -123,7 +126,7 @@ export default function UsersPage() {
       >
         <h1 className="text-3xl font-bold mb-2">Gestión de Usuarios</h1>
         <p className="text-muted-foreground">
-          {userRole === "ADMIN" 
+          {userRole === "ADMIN"
             ? "Invita usuarios a tu organización y gestiona sus roles"
             : "Visualiza los usuarios de tu organización"}
         </p>
@@ -137,70 +140,76 @@ export default function UsersPage() {
           transition={{ delay: 0.1 }}
         >
           <Card className="shadow-md">
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <div className="p-2 rounded-lg bg-primary/10">
-                <UserPlus className="h-5 w-5 text-primary" />
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-lg bg-primary/10">
+                  <UserPlus className="h-5 w-5 text-primary" />
+                </div>
+                <CardTitle>Invitar Usuario</CardTitle>
               </div>
-              <CardTitle>Invitar Usuario</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <form id="invite-form" action={handleInvite} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email del Empleado</Label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground" />
-                    <Input
-                      id="email"
-                      name="email"
-                      type="email"
-                      placeholder="empleado@email.com"
-                      required
-                      className="pl-10"
-                      disabled={isLoading}
-                    />
+            </CardHeader>
+            <CardContent>
+              <form id="invite-form" action={handleInvite} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="email">Email del Empleado</Label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground" />
+                      <Input
+                        id="email"
+                        name="email"
+                        type="email"
+                        placeholder="empleado@email.com"
+                        required
+                        className="pl-10"
+                        disabled={isLoading}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="role">Rol</Label>
+                    <Select name="role" required disabled={isLoading}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Seleccionar rol" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="VIEWER">Viewer</SelectItem>
+                        <SelectItem value="MANAGER">Manager</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="role">Rol</Label>
-                  <Select name="role" required disabled={isLoading}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Seleccionar rol" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="VIEWER">Viewer</SelectItem>
-                      <SelectItem value="MANAGER">Manager</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              {isMultiCountry && (
-                <div className="space-y-2">
-                  <Label htmlFor="country_code">País</Label>
-                  <Select name="country_code" required disabled={isLoading}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Seleccionar país" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="MX">🇲🇽 México</SelectItem>
-                      <SelectItem value="UY">🇺🇾 Uruguay</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              <Button
-                type="submit"
-                className="w-full md:w-auto"
-                disabled={isLoading}
-              >
-                {isLoading ? "Enviando..." : "Enviar Invitación"}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-      </motion.div>
+                {isMultiCountry && (
+                  <div className="space-y-2">
+                    <Label htmlFor="country_code">País</Label>
+                    <Select name="country_code" required disabled={isLoading}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Seleccionar país" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {COUNTRIES.map((country) => (
+                          <SelectItem key={country.code} value={country.code}>
+                            <span className="flex items-center gap-2">
+                              <CountryFlag countryCode={country.code} size="sm" />
+                              {country.name}
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                <Button
+                  type="submit"
+                  className="w-full md:w-auto"
+                  disabled={isLoading}
+                >
+                  {isLoading ? "Enviando..." : "Enviar Invitación"}
+                </Button>
+              </form>
+            </CardContent>
+          </Card>
+        </motion.div>
       )}
 
       {/* Lista de Usuarios */}
@@ -250,16 +259,18 @@ export default function UsersPage() {
                           })}
                         </p>
                         {user.country_code && (
-                          <p className="text-xs text-muted-foreground mt-1">
-                            País: {user.country_code === "MX" ? "🇲🇽 México" : user.country_code === "UY" ? "🇺🇾 Uruguay" : user.country_code}
+                          <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                            País:
+                            <CountryFlag countryCode={user.country_code} size="sm" showName />
                           </p>
                         )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
                       {user.country_code && (
-                        <Badge variant="outline" className="text-xs">
-                          {user.country_code === "MX" ? "🇲🇽" : user.country_code === "UY" ? "🇺🇾" : user.country_code}
+                        <Badge variant="outline" className="text-xs flex items-center gap-1">
+                          <CountryFlag countryCode={user.country_code} size="sm" />
+                          {getCountryName(user.country_code)}
                         </Badge>
                       )}
                       <Badge variant={getRoleBadgeVariant(user.role)}>
@@ -276,4 +287,3 @@ export default function UsersPage() {
     </div>
   );
 }
-

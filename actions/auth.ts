@@ -95,9 +95,9 @@ export async function inviteUser(formData: FormData) {
   }
 
   // Validar que el país sea válido
-  if (!["MX", "UY"].includes(finalCountryCode)) {
+  if (!["MX", "UY", "AR"].includes(finalCountryCode)) {
     return {
-      error: "País inválido. Solo se permiten MX o UY",
+      error: "País inválido. Solo se permiten MX, UY o AR",
     };
   }
 
