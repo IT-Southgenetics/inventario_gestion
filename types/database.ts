@@ -38,11 +38,30 @@ export interface Product {
   current_stock: number;
   min_stock: number;
   description: string | null;
+  expiration_date: string | null;
   category_id: number;
   organization_id: string;
   country_code: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface Kit {
+  id: string;
+  name: string;
+  description: string | null;
+  organization_id: string;
+  country_code: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KitProduct {
+  id: string;
+  kit_id: string;
+  product_id: string;
+  quantity: number;
+  created_at: string;
 }
 
 export interface Movement {

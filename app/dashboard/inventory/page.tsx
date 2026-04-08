@@ -9,6 +9,10 @@ import {
   History,
   Edit,
   Trash2,
+  Calendar,
+  AlertTriangle,
+  Boxes,
+  ArrowUpCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,14 +29,21 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
-import { deleteProduct } from "@/actions/inventory";
-import type { Product, Category } from "@/types/database";
+import { deleteProduct, deleteKit } from "@/actions/inventory";
+import type { Product, Category, Kit, KitProduct } from "@/types/database";
 
 type ProductWithCategory = Product & {
   category?: Category;
 };
+
+type KitWithProducts = Kit & {
+  kit_products: (KitProduct & { product?: Product })[];
+};
+
 import { MovementSheet } from "@/components/inventory/movement-sheet";
 import { ProductSheet } from "@/components/inventory/product-sheet";
+import { KitSheet } from "@/components/inventory/kit-sheet";
+import { KitExitSheet } from "@/components/inventory/kit-exit-sheet";
 
 export default function InventoryPage() {
   const router = useRouter();
@@ -47,6 +58,16 @@ export default function InventoryPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [productToDelete, setProductToDelete] = useState<ProductWithCategory | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Kit states
+  const [kits, setKits] = useState<KitWithProducts[]>([]);
+  const [isKitSheetOpen, setIsKitSheetOpen] = useState(false);
+  const [isKitExitSheetOpen, setIsKitExitSheetOpen] = useState(false);
+  const [editingKit, setEditingKit] = useState<KitWithProducts | null>(null);
+  const [deleteKitDialogOpen, setDeleteKitDialogOpen] = useState(false);
+  const [kitToDelete, setKitToDelete] = useState<KitWithProducts | null>(null);
+  const [isDeletingKit, setIsDeletingKit] = useState(false);
+  const [activeTab, setActiveTab] = useState<"products" | "kits">("products");
 
   const loadData = useCallback(async () => {
     const supabase = createClient();
@@ -112,6 +133,36 @@ export default function InventoryPage() {
       };
     });
 
+    // Cargar kits
+    const { data: kitsData } = await supabase
+      .from("kits")
+      .select("*")
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode)
+      .order("name", { ascending: true });
+
+    if (kitsData && kitsData.length > 0) {
+      const kitIds = kitsData.map((k: Kit) => k.id);
+      const { data: kitProductsData } = await supabase
+        .from("kit_products")
+        .select("*")
+        .in("kit_id", kitIds);
+
+      const kitsWithProducts: KitWithProducts[] = kitsData.map((k: Kit) => {
+        const kitProds = (kitProductsData || [])
+          .filter((kp: KitProduct) => kp.kit_id === k.id)
+          .map((kp: KitProduct) => ({
+            ...kp,
+            product: productsData?.find((p: Product) => p.id === kp.product_id),
+          }));
+        return { ...k, kit_products: kitProds };
+      });
+
+      setKits(kitsWithProducts);
+    } else {
+      setKits([]);
+    }
+
     setProducts(productsWithCategory);
     setCategories(categoriesData || []);
     setIsLoading(false);
@@ -151,6 +202,23 @@ export default function InventoryPage() {
     return category?.name || "Sin categoría";
   };
 
+  const getExpirationStatus = (expirationDate: string | null) => {
+    if (!expirationDate) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expDate = new Date(expirationDate + "T00:00:00");
+    const diffDays = Math.ceil((expDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 0) {
+      return { status: "expired", label: "Vencido", color: "text-red-600" };
+    } else if (diffDays <= 30) {
+      return { status: "soon", label: `Vence en ${diffDays}d`, color: "text-orange-600" };
+    } else if (diffDays <= 90) {
+      return { status: "warning", label: `Vence en ${diffDays}d`, color: "text-amber-600" };
+    }
+    return { status: "ok", label: expDate.toLocaleDateString("es-ES"), color: "text-slate-400" };
+  };
+
   async function handleDeleteProduct() {
     if (!productToDelete) return;
 
@@ -172,6 +240,27 @@ export default function InventoryPage() {
     setIsDeleting(false);
   }
 
+  async function handleDeleteKit() {
+    if (!kitToDelete) return;
+
+    setIsDeletingKit(true);
+    const result = await deleteKit(kitToDelete.id);
+
+    if (result?.error) {
+      toast.error(result.error);
+      setIsDeletingKit(false);
+      return;
+    }
+
+    if (result?.success) {
+      toast.success(result.message || "Kit eliminado correctamente");
+      setDeleteKitDialogOpen(false);
+      setKitToDelete(null);
+      loadData();
+    }
+    setIsDeletingKit(false);
+  }
+
   return (
     <div className="container mx-auto px-4 py-6 space-y-6">
       {/* Header */}
@@ -187,23 +276,37 @@ export default function InventoryPage() {
               Gestiona tus productos y stock
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap justify-end">
             <Button
               onClick={() => setIsProductSheetOpen(true)}
               className="bg-teal-600 hover:bg-teal-700 text-white"
-              size="lg"
             >
-              <Plus className="mr-2 h-5 w-5" />
-              Agregar Producto
+              <Plus className="mr-2 h-4 w-4" />
+              Producto
+            </Button>
+            <Button
+              onClick={() => setIsKitSheetOpen(true)}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white"
+            >
+              <Boxes className="mr-2 h-4 w-4" />
+              Kit
             </Button>
             <Button
               onClick={() => setIsMovementSheetOpen(true)}
-              className="bg-teal-600 hover:bg-teal-700 text-white"
-              size="lg"
+              variant="outline"
             >
-              <Plus className="mr-2 h-5 w-5" />
-              Registrar Movimiento
+              <Plus className="mr-2 h-4 w-4" />
+              Movimiento
             </Button>
+            {kits.length > 0 && (
+              <Button
+                onClick={() => setIsKitExitSheetOpen(true)}
+                className="bg-red-600 hover:bg-red-700 text-white"
+              >
+                <ArrowUpCircle className="mr-2 h-4 w-4" />
+                Salida Kit
+              </Button>
+            )}
           </div>
         </div>
 
@@ -218,29 +321,154 @@ export default function InventoryPage() {
           />
         </div>
 
-        {/* Filtros por Categoría */}
-        <Tabs
-          value={selectedCategory?.toString() || "all"}
-          onValueChange={(value) =>
-            setSelectedCategory(value === "all" ? null : parseInt(value))
-          }
-        >
-          <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="all">Todos</TabsTrigger>
-            {categories.slice(0, 3).map((category) => (
-              <TabsTrigger key={category.id} value={category.id.toString()}>
-                {category.name}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+        {/* Toggle Productos / Kits */}
+        <div className="flex gap-2 p-1 bg-slate-100 rounded-lg">
+          <Button
+            type="button"
+            variant={activeTab === "products" ? "default" : "ghost"}
+            className={`flex-1 ${
+              activeTab === "products" ? "bg-teal-600 hover:bg-teal-700 text-white" : ""
+            }`}
+            onClick={() => setActiveTab("products")}
+          >
+            <Package className="mr-2 h-4 w-4" />
+            Productos ({products.length})
+          </Button>
+          <Button
+            type="button"
+            variant={activeTab === "kits" ? "default" : "ghost"}
+            className={`flex-1 ${
+              activeTab === "kits" ? "bg-indigo-600 hover:bg-indigo-700 text-white" : ""
+            }`}
+            onClick={() => setActiveTab("kits")}
+          >
+            <Boxes className="mr-2 h-4 w-4" />
+            Kits ({kits.length})
+          </Button>
+        </div>
+
+        {activeTab === "products" && (
+          <Tabs
+            value={selectedCategory?.toString() || "all"}
+            onValueChange={(value) =>
+              setSelectedCategory(value === "all" ? null : parseInt(value))
+            }
+          >
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="all">Todos</TabsTrigger>
+              {categories.slice(0, 3).map((category) => (
+                <TabsTrigger key={category.id} value={category.id.toString()}>
+                  {category.name}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+        )}
       </motion.div>
 
       {/* Lista de Productos */}
       {isLoading ? (
         <div className="text-center py-12 text-slate-500">
-          Cargando productos...
+          Cargando...
         </div>
+      ) : activeTab === "kits" ? (
+        /* ===== SECCIÓN DE KITS ===== */
+        kits.length === 0 ? (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-center py-12"
+          >
+            <Boxes className="h-16 w-16 text-slate-300 mx-auto mb-4" />
+            <h3 className="text-xl font-semibold text-slate-700 mb-2">
+              No hay kits
+            </h3>
+            <p className="text-slate-500 mb-6">
+              Crea un kit para agrupar productos y dar salidas en conjunto
+            </p>
+            <Button
+              onClick={() => setIsKitSheetOpen(true)}
+              className="bg-indigo-600 hover:bg-indigo-700"
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              Crear Kit
+            </Button>
+          </motion.div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3">
+            {kits.map((kit, index) => (
+              <motion.div
+                key={kit.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: index * 0.03 }}
+              >
+                <Card className="border-slate-200 hover:border-indigo-300 transition-colors">
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3">
+                          <div className="p-1.5 rounded-md bg-indigo-100">
+                            <Boxes className="h-4 w-4 text-indigo-600" />
+                          </div>
+                          <h3 className="font-semibold text-slate-900">
+                            {kit.name}
+                          </h3>
+                          <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+                            {kit.kit_products.length} producto(s)
+                          </span>
+                        </div>
+                        {kit.description && (
+                          <p className="text-sm text-slate-500 mt-1 ml-10">
+                            {kit.description}
+                          </p>
+                        )}
+                        <div className="mt-2 ml-10 flex flex-wrap gap-2">
+                          {kit.kit_products.map((kp) => (
+                            <span
+                              key={kp.id}
+                              className="inline-flex items-center gap-1 text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded-md"
+                            >
+                              <Package className="h-3 w-3" />
+                              {kp.product?.name || "Producto"}
+                              <span className="text-slate-400">x{kp.quantity}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0"
+                          onClick={() => {
+                            setEditingKit(kit);
+                            setIsKitSheetOpen(true);
+                          }}
+                          title="Editar kit"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => {
+                            setKitToDelete(kit);
+                            setDeleteKitDialogOpen(true);
+                          }}
+                          title="Eliminar kit"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            ))}
+          </div>
+        )
       ) : filteredProducts.length === 0 ? (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -272,6 +500,7 @@ export default function InventoryPage() {
         <div className="grid grid-cols-1 gap-2">
           {filteredProducts.map((product, index) => {
             const stockStatus = getStockStatus(product);
+            const expStatus = getExpirationStatus(product.expiration_date);
             return (
               <motion.div
                 key={product.id}
@@ -311,6 +540,12 @@ export default function InventoryPage() {
                           <span className="text-xs text-slate-400">
                             {getCategoryName(product.category_id)}
                           </span>
+                          {expStatus && (
+                            <span className={`text-xs flex items-center gap-1 ${expStatus.color}`}>
+                              <Calendar className="h-3 w-3" />
+                              {expStatus.label}
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -400,7 +635,33 @@ export default function InventoryPage() {
         }}
       />
 
-      {/* Dialog de Confirmación para Eliminar */}
+      {/* Sheet de Crear/Editar Kit */}
+      <KitSheet
+        open={isKitSheetOpen}
+        onOpenChange={(open) => {
+          setIsKitSheetOpen(open);
+          if (!open) setEditingKit(null);
+        }}
+        kit={editingKit}
+        products={products}
+        onSuccess={() => {
+          loadData();
+          setEditingKit(null);
+        }}
+      />
+
+      {/* Sheet de Salida de Kit */}
+      <KitExitSheet
+        open={isKitExitSheetOpen}
+        onOpenChange={setIsKitExitSheetOpen}
+        kits={kits}
+        onSuccess={() => {
+          loadData();
+          setIsKitExitSheetOpen(false);
+        }}
+      />
+
+      {/* Dialog de Confirmación para Eliminar Producto */}
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -427,6 +688,39 @@ export default function InventoryPage() {
               disabled={isDeleting}
             >
               {isDeleting ? "Eliminando..." : "Eliminar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de Confirmación para Eliminar Kit */}
+      <Dialog open={deleteKitDialogOpen} onOpenChange={setDeleteKitDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>¿Eliminar kit?</DialogTitle>
+            <DialogDescription>
+              Esta acción no se puede deshacer. Se eliminará el kit{" "}
+              <strong>{kitToDelete?.name}</strong> y sus asociaciones de productos.
+              Los productos en sí no se eliminarán.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteKitDialogOpen(false);
+                setKitToDelete(null);
+              }}
+              disabled={isDeletingKit}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteKit}
+              disabled={isDeletingKit}
+            >
+              {isDeletingKit ? "Eliminando..." : "Eliminar"}
             </Button>
           </DialogFooter>
         </DialogContent>

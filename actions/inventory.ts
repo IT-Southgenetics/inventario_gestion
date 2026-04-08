@@ -23,6 +23,16 @@ const productSchema = z.object({
   description: z.string().optional(),
   min_stock: z.number().int().min(0, "El stock mínimo debe ser 0 o mayor"),
   category_id: z.number().int().positive("La categoría es requerida"),
+  expiration_date: z.string().optional().nullable(),
+});
+
+const kitSchema = z.object({
+  name: z.string().min(1, "El nombre del kit es requerido"),
+  description: z.string().optional(),
+  products: z.array(z.object({
+    product_id: z.string().uuid("ID de producto inválido"),
+    quantity: z.number().int().positive("La cantidad debe ser mayor a 0"),
+  })).min(1, "El kit debe contener al menos un producto"),
 });
 
 const movementSchema = z.object({
@@ -195,6 +205,7 @@ export async function createProduct(formData: FormData) {
       description: formData.get("description") as string,
       min_stock: Number(formData.get("min_stock")),
       category_id: Number(formData.get("category_id")),
+      expiration_date: formData.get("expiration_date") as string | null,
     };
 
     const validatedData = productSchema.parse(rawData);
@@ -242,8 +253,9 @@ export async function createProduct(formData: FormData) {
         organization_id: profile.organization_id,
         country_code: profile.country_code || "MX",
         current_stock: 0,
-        stock: 0, // Mantener compatibilidad
+        stock: 0,
         description: validatedData.description || null,
+        expiration_date: validatedData.expiration_date || null,
       })
       .select()
       .single();
@@ -541,6 +553,7 @@ export async function updateProduct(productId: string, formData: FormData) {
       description: formData.get("description") as string,
       min_stock: Number(formData.get("min_stock")),
       category_id: Number(formData.get("category_id")),
+      expiration_date: formData.get("expiration_date") as string | null,
     };
 
     const validatedData = productSchema.parse(rawData);
@@ -607,6 +620,7 @@ export async function updateProduct(productId: string, formData: FormData) {
         description: validatedData.description || null,
         min_stock: validatedData.min_stock,
         category_id: validatedData.category_id,
+        expiration_date: validatedData.expiration_date || null,
       })
       .eq("id", productId)
       .eq("organization_id", profile.organization_id)
@@ -836,6 +850,363 @@ export async function createCategory(formData: FormData) {
     console.error("Error inesperado en createCategory:", error);
     return {
       error: error instanceof Error ? error.message : "Error inesperado al crear categoría",
+    };
+  }
+}
+
+// ==================== KIT ACTIONS ====================
+
+export async function createKit(data: {
+  name: string;
+  description?: string;
+  products: { product_id: string; quantity: number }[];
+}) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const validatedData = kitSchema.parse(data);
+
+    const { data: kit, error: kitError } = await supabase
+      .from("kits")
+      .insert({
+        name: validatedData.name,
+        description: validatedData.description || null,
+        organization_id: profile.organization_id,
+        country_code: profile.country_code || "MX",
+      })
+      .select()
+      .single();
+
+    if (kitError || !kit) {
+      console.error("Error al crear kit:", kitError);
+      return { error: kitError?.message || "Error al crear kit" };
+    }
+
+    const kitProductsData = validatedData.products.map((p) => ({
+      kit_id: kit.id,
+      product_id: p.product_id,
+      quantity: p.quantity,
+    }));
+
+    const { error: productsError } = await supabase
+      .from("kit_products")
+      .insert(kitProductsData);
+
+    if (productsError) {
+      await supabase.from("kits").delete().eq("id", kit.id);
+      console.error("Error al asociar productos al kit:", productsError);
+      return { error: productsError.message };
+    }
+
+    revalidatePath("/dashboard/inventory");
+    return {
+      success: true,
+      data: kit,
+      message: "Kit creado correctamente",
+    };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const firstError = error.issues?.[0]?.message || "Error de validación";
+      return { error: firstError };
+    }
+    console.error("Error inesperado en createKit:", error);
+    return {
+      error: error instanceof Error ? error.message : "Error inesperado al crear kit",
+    };
+  }
+}
+
+export async function updateKit(
+  kitId: string,
+  data: {
+    name: string;
+    description?: string;
+    products: { product_id: string; quantity: number }[];
+  }
+) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const validatedData = kitSchema.parse(data);
+
+    const { error: updateError } = await supabase
+      .from("kits")
+      .update({
+        name: validatedData.name,
+        description: validatedData.description || null,
+      })
+      .eq("id", kitId)
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", profile.country_code || "MX");
+
+    if (updateError) {
+      console.error("Error al actualizar kit:", updateError);
+      return { error: updateError.message };
+    }
+
+    await supabase.from("kit_products").delete().eq("kit_id", kitId);
+
+    const kitProductsData = validatedData.products.map((p) => ({
+      kit_id: kitId,
+      product_id: p.product_id,
+      quantity: p.quantity,
+    }));
+
+    const { error: productsError } = await supabase
+      .from("kit_products")
+      .insert(kitProductsData);
+
+    if (productsError) {
+      console.error("Error al actualizar productos del kit:", productsError);
+      return { error: productsError.message };
+    }
+
+    revalidatePath("/dashboard/inventory");
+    return {
+      success: true,
+      message: "Kit actualizado correctamente",
+    };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const firstError = error.issues?.[0]?.message || "Error de validación";
+      return { error: firstError };
+    }
+    console.error("Error inesperado en updateKit:", error);
+    return {
+      error: error instanceof Error ? error.message : "Error inesperado al actualizar kit",
+    };
+  }
+}
+
+export async function deleteKit(kitId: string) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const { error } = await supabase
+      .from("kits")
+      .delete()
+      .eq("id", kitId)
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", profile.country_code || "MX");
+
+    if (error) {
+      console.error("Error al eliminar kit:", error);
+      return { error: error.message };
+    }
+
+    revalidatePath("/dashboard/inventory");
+    return {
+      success: true,
+      message: "Kit eliminado correctamente",
+    };
+  } catch (error) {
+    console.error("Error inesperado en deleteKit:", error);
+    return {
+      error: error instanceof Error ? error.message : "Error inesperado al eliminar kit",
+    };
+  }
+}
+
+export async function registerKitExit(data: {
+  kit_id: string;
+  recipient?: string;
+  notes?: string;
+}) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const { data: kit, error: kitError } = await supabase
+      .from("kits")
+      .select("id, name")
+      .eq("id", data.kit_id)
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", profile.country_code || "MX")
+      .single();
+
+    if (kitError || !kit) {
+      return { error: "Kit no encontrado" };
+    }
+
+    const { data: kitProducts, error: kitProductsError } = await supabase
+      .from("kit_products")
+      .select("product_id, quantity")
+      .eq("kit_id", data.kit_id);
+
+    if (kitProductsError || !kitProducts || kitProducts.length === 0) {
+      return { error: "El kit no tiene productos asociados" };
+    }
+
+    const productIds = kitProducts.map((kp) => kp.product_id);
+    const { data: products, error: productsError } = await supabase
+      .from("products")
+      .select("id, name, current_stock, country_code")
+      .in("id", productIds);
+
+    if (productsError || !products) {
+      return { error: "Error al verificar productos del kit" };
+    }
+
+    for (const kp of kitProducts) {
+      const product = products.find((p) => p.id === kp.product_id);
+      if (!product) {
+        return { error: `Producto no encontrado en el kit` };
+      }
+      if (product.current_stock < kp.quantity) {
+        return {
+          error: `Stock insuficiente para "${product.name}". Stock actual: ${product.current_stock}, necesario: ${kp.quantity}`,
+        };
+      }
+    }
+
+    const kitExitNote = `Salida por Kit: ${kit.name}${data.notes ? ` - ${data.notes}` : ""}`;
+
+    const movements = kitProducts.map((kp) => ({
+      product_id: kp.product_id,
+      type: "Salida" as const,
+      quantity: kp.quantity,
+      organization_id: profile.organization_id,
+      country_code: profile.country_code || "MX",
+      created_by: user.id,
+      recipient: data.recipient || null,
+      notes: kitExitNote,
+      lot_number: null,
+      expiration_date: null,
+      supplier_id: null,
+    }));
+
+    const { error: movementsError } = await supabase
+      .from("movements")
+      .insert(movements);
+
+    if (movementsError) {
+      console.error("Error al registrar movimientos del kit:", movementsError);
+      return { error: movementsError.message };
+    }
+
+    // Verificar productos con bajo stock después de la salida
+    const { data: updatedProducts } = await supabase
+      .from("products")
+      .select("id, name, sku, current_stock, min_stock")
+      .in("id", productIds);
+
+    if (updatedProducts) {
+      const lowStockProducts = updatedProducts.filter(
+        (p) => p.current_stock <= p.min_stock
+      );
+
+      if (lowStockProducts.length > 0) {
+        const { data: countryUsers } = await supabase
+          .from("profiles")
+          .select("email")
+          .eq("organization_id", profile.organization_id)
+          .eq("country_code", profile.country_code || "MX");
+
+        if (countryUsers && countryUsers.length > 0) {
+          const emails = countryUsers.map((u) => u.email).filter(Boolean);
+
+          for (const product of lowStockProducts) {
+            try {
+              await fetch("https://n8n.srv908725.hstgr.cloud/webhook/bajo_stock", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  emails,
+                  product: {
+                    id: product.id,
+                    name: product.name,
+                    sku: product.sku,
+                    current_stock: product.current_stock,
+                    min_stock: product.min_stock,
+                  },
+                  country_code: profile.country_code || "MX",
+                }),
+              });
+            } catch (webhookError) {
+              console.error("Error al enviar webhook de bajo stock:", webhookError);
+            }
+          }
+        }
+      }
+    }
+
+    revalidatePath("/dashboard/inventory");
+    revalidatePath("/dashboard");
+    return {
+      success: true,
+      message: `Salida del kit "${kit.name}" registrada correctamente (${kitProducts.length} productos)`,
+    };
+  } catch (error) {
+    console.error("Error inesperado en registerKitExit:", error);
+    return {
+      error: error instanceof Error ? error.message : "Error inesperado al registrar salida del kit",
     };
   }
 }
