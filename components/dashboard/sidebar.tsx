@@ -10,6 +10,7 @@ import {
   LogOut,
   X,
   Building2,
+  Warehouse,
   History,
   FileSpreadsheet,
 } from "lucide-react";
@@ -44,6 +45,11 @@ const navigationItems: Array<{
     name: "Proveedores",
     href: "/dashboard/suppliers",
     icon: Building2,
+  },
+  {
+    name: "Almacenes",
+    href: "/dashboard/warehouses",
+    icon: Warehouse,
   },
   {
     name: "Historial",

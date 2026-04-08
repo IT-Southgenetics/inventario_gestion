@@ -42,6 +42,7 @@ type MovementRow = Movement & {
   product_sku: string;
   user_email: string;
   supplier_name: string;
+  warehouse_name: string;
 };
 
 export function ReportsContent() {
@@ -53,6 +54,10 @@ export function ReportsContent() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [totalCount, setTotalCount] = useState(0);
+  const [warehouseFilter, setWarehouseFilter] = useState<string>("all");
+  const [warehouseOptions, setWarehouseOptions] = useState<{ id: string; name: string }[]>(
+    []
+  );
 
   const loadMovements = useCallback(async () => {
     setIsLoading(true);
@@ -81,6 +86,15 @@ export function ReportsContent() {
 
     const countryCode = profile.country_code || "MX";
 
+    const { data: whList } = await supabase
+      .from("warehouses")
+      .select("id, name")
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode)
+      .order("name", { ascending: true });
+
+    setWarehouseOptions(whList || []);
+
     let query = supabase
       .from("movements")
       .select("*", { count: "exact" })
@@ -88,6 +102,14 @@ export function ReportsContent() {
       .eq("country_code", countryCode)
       .order("movement_date", { ascending: false })
       .order("created_at", { ascending: false });
+
+    if (warehouseFilter !== "all") {
+      if (warehouseFilter === "__none__") {
+        query = query.is("warehouse_id", null);
+      } else {
+        query = query.eq("warehouse_id", warehouseFilter);
+      }
+    }
 
     if (dateFrom) {
       query = query.gte("movement_date", dateFrom);
@@ -118,6 +140,13 @@ export function ReportsContent() {
     const productIds = [...new Set(movementsData.map((m) => m.product_id))];
     const userIds = [...new Set(movementsData.map((m) => m.created_by).filter(Boolean))];
     const supplierIds = [...new Set(movementsData.map((m) => m.supplier_id).filter(Boolean))];
+    const movementWarehouseIds = [
+      ...new Set(
+        movementsData
+          .map((m) => m.warehouse_id)
+          .filter((id): id is string => Boolean(id))
+      ),
+    ];
 
     const { data: productsData } = await supabase
       .from("products")
@@ -132,10 +161,20 @@ export function ReportsContent() {
       ? await supabase.from("suppliers").select("id, name").in("id", supplierIds)
       : { data: [] };
 
+    const { data: warehousesData } = movementWarehouseIds.length > 0
+      ? await supabase
+          .from("warehouses")
+          .select("id, name")
+          .in("id", movementWarehouseIds)
+      : { data: [] };
+
     const rows: MovementRow[] = movementsData.map((m) => {
       const product = productsData?.find((p) => p.id === m.product_id);
       const userProfile = profilesData?.find((p) => p.id === m.created_by);
       const supplier = suppliersData?.find((s) => s.id === m.supplier_id);
+      const whName = m.warehouse_id
+        ? warehousesData?.find((w) => w.id === m.warehouse_id)?.name || ""
+        : "";
 
       return {
         ...m,
@@ -143,12 +182,13 @@ export function ReportsContent() {
         product_sku: product?.sku || "N/A",
         user_email: userProfile?.email || "Sistema",
         supplier_name: supplier?.name || "",
+        warehouse_name: whName,
       };
     });
 
     setMovements(rows);
     setIsLoading(false);
-  }, [dateFrom, dateTo, typeFilter]);
+  }, [dateFrom, dateTo, typeFilter, warehouseFilter]);
 
   useEffect(() => {
     loadMovements();
@@ -163,6 +203,7 @@ export function ReportsContent() {
       m.user_email.toLowerCase().includes(q) ||
       m.recipient?.toLowerCase().includes(q) ||
       m.supplier_name.toLowerCase().includes(q) ||
+      m.warehouse_name.toLowerCase().includes(q) ||
       m.lot_number?.toLowerCase().includes(q) ||
       m.notes?.toLowerCase().includes(q)
     );
@@ -178,6 +219,7 @@ export function ReportsContent() {
         SKU: m.product_sku,
         Tipo: m.type,
         Cantidad: m.type === "Entrada" ? m.quantity : -m.quantity,
+        Almacén: m.warehouse_name || "",
         Proveedor: m.supplier_name || "",
         Destinatario: m.recipient || "",
         "Nro. Lote": m.lot_number || "",
@@ -195,6 +237,7 @@ export function ReportsContent() {
         { wch: 16 },
         { wch: 10 },
         { wch: 10 },
+        { wch: 22 },
         { wch: 25 },
         { wch: 25 },
         { wch: 18 },
@@ -281,9 +324,9 @@ export function ReportsContent() {
               <Filter className="h-4 w-4" />
               Filtros
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
               {/* Búsqueda */}
-              <div className="md:col-span-2">
+              <div className="lg:col-span-2">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-slate-400" />
                   <Input
@@ -307,8 +350,27 @@ export function ReportsContent() {
                 </SelectContent>
               </Select>
 
+              {/* Almacén */}
+              <Select
+                value={warehouseFilter}
+                onValueChange={setWarehouseFilter}
+              >
+                <SelectTrigger className="h-10">
+                  <SelectValue placeholder="Almacén" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos los almacenes</SelectItem>
+                  <SelectItem value="__none__">Sin almacén</SelectItem>
+                  {warehouseOptions.map((w) => (
+                    <SelectItem key={w.id} value={w.id}>
+                      {w.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
               {/* Rango de fechas */}
-              <div className="flex gap-2">
+              <div className="flex gap-2 lg:col-span-2">
                 <Input
                   type="date"
                   value={dateFrom}
@@ -325,7 +387,10 @@ export function ReportsContent() {
                 />
               </div>
             </div>
-            {(dateFrom || dateTo || typeFilter !== "all") && (
+            {(dateFrom ||
+              dateTo ||
+              typeFilter !== "all" ||
+              warehouseFilter !== "all") && (
               <div className="mt-3 flex items-center gap-2">
                 <span className="text-xs text-slate-500">
                   {totalCount} movimiento(s) encontrado(s)
@@ -338,6 +403,7 @@ export function ReportsContent() {
                     setDateFrom("");
                     setDateTo("");
                     setTypeFilter("all");
+                    setWarehouseFilter("all");
                     setSearchQuery("");
                   }}
                 >
@@ -407,6 +473,7 @@ export function ReportsContent() {
                         <TableHead className="font-semibold">SKU</TableHead>
                         <TableHead className="font-semibold">Tipo</TableHead>
                         <TableHead className="font-semibold text-right">Cantidad</TableHead>
+                        <TableHead className="font-semibold">Almacén</TableHead>
                         <TableHead className="font-semibold">Proveedor</TableHead>
                         <TableHead className="font-semibold">Destinatario</TableHead>
                         <TableHead className="font-semibold">Lote</TableHead>
@@ -450,6 +517,9 @@ export function ReportsContent() {
                               >
                                 {isEntrada ? "+" : "-"}{m.quantity}
                               </span>
+                            </TableCell>
+                            <TableCell className="text-sm text-slate-600">
+                              {m.warehouse_name || "—"}
                             </TableCell>
                             <TableCell className="text-sm text-slate-600">
                               {m.supplier_name || "-"}
@@ -531,7 +601,9 @@ export function ReportsContent() {
                         </span>
                         <span className="text-right">{m.type}</span>
                         <span>{m.user_email.split("@")[0]}</span>
-                        <span className="text-right">{m.recipient || m.supplier_name || "-"}</span>
+                        <span className="text-right">
+                          {m.warehouse_name || m.recipient || m.supplier_name || "-"}
+                        </span>
                       </div>
                     </CardContent>
                   </Card>

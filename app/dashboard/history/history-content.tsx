@@ -41,6 +41,7 @@ type MovementWithDetails = Movement & {
   products: Product | null;
   profiles: Profile | null;
   suppliers: { name: string } | null;
+  warehouseName: string | null;
 };
 
 export function HistoryContent() {
@@ -118,6 +119,13 @@ export function HistoryContent() {
     const productIds = [...new Set(movementsData.map((m) => m.product_id))];
     const userIds = [...new Set(movementsData.map((m) => m.created_by).filter(Boolean))];
     const supplierIds = [...new Set(movementsData.map((m) => m.supplier_id).filter(Boolean))];
+    const warehouseIds = [
+      ...new Set(
+        movementsData
+          .map((m) => m.warehouse_id)
+          .filter((id): id is string => Boolean(id))
+      ),
+    ];
 
     // Cargar productos
     const { data: productsData } = await supabase
@@ -147,12 +155,22 @@ export function HistoryContent() {
           .in("id", supplierIds)
       : { data: [] };
 
+    const { data: warehousesData } = warehouseIds.length > 0
+      ? await supabase
+          .from("warehouses")
+          .select("id, name")
+          .in("id", warehouseIds)
+      : { data: [] };
+
     // Mapear datos
     const movementsWithDetails = movementsData.map((movement) => ({
       ...movement,
       products: productsData?.find((p) => p.id === movement.product_id) || null,
       profiles: profilesData?.find((p) => p.id === movement.created_by) || null,
       suppliers: suppliersData?.find((s) => s.id === movement.supplier_id) || null,
+      warehouseName: movement.warehouse_id
+        ? warehousesData?.find((w) => w.id === movement.warehouse_id)?.name || null
+        : null,
     }));
 
     setMovements(movementsWithDetails);
@@ -291,6 +309,7 @@ export function HistoryContent() {
                         {!selectedProduct && <TableHead>Producto</TableHead>}
                         <TableHead>Tipo</TableHead>
                         <TableHead className="text-right">Cantidad</TableHead>
+                        <TableHead>Almacén</TableHead>
                         <TableHead>Detalle/Traza</TableHead>
                         <TableHead>Usuario</TableHead>
                         <TableHead>Registrado</TableHead>
@@ -341,6 +360,9 @@ export function HistoryContent() {
                                 {isEntrada ? "+" : "-"}
                                 {movement.quantity}
                               </span>
+                            </TableCell>
+                            <TableCell className="text-sm text-slate-600">
+                              {movement.warehouseName || "—"}
                             </TableCell>
                             <TableCell>
                               {isEntrada ? (
@@ -461,6 +483,11 @@ export function HistoryContent() {
                             ? formatMovementDate(movement.movement_date)
                             : formatDate(movement.created_at)}
                         </div>
+                        {movement.warehouseName && (
+                          <div className="text-slate-600">
+                            Almacén: {movement.warehouseName}
+                          </div>
+                        )}
 
                         {isEntrada ? (
                           <>

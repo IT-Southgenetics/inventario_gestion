@@ -64,6 +64,25 @@ export interface KitProduct {
   created_at: string;
 }
 
+export interface Warehouse {
+  id: string;
+  name: string;
+  description: string | null;
+  organization_id: string;
+  country_code: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WarehouseStock {
+  id: string;
+  warehouse_id: string;
+  product_id: string;
+  current_stock: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface Movement {
   id: string;
   product_id: string;
@@ -75,6 +94,7 @@ export interface Movement {
   supplier_id: string | null;
   recipient: string | null;
   notes: string | null;
+  warehouse_id: string | null;
   organization_id: string;
   country_code: string;
   created_at: string;

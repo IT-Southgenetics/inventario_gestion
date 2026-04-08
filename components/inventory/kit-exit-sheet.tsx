@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   ArrowUpCircle,
   Boxes,
@@ -8,6 +8,7 @@ import {
   FileText,
   Package,
   AlertTriangle,
+  Warehouse,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,8 +29,9 @@ import {
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { registerKitExit } from "@/actions/inventory";
+import { createClient } from "@/lib/supabase/client";
 import toast from "react-hot-toast";
-import type { Product, Kit, KitProduct } from "@/types/database";
+import type { Product, Kit, KitProduct, Warehouse as WarehouseType } from "@/types/database";
 
 type KitWithProducts = Kit & {
   kit_products: (KitProduct & { product?: Product })[];
@@ -52,6 +54,48 @@ export function KitExitSheet({
   const [selectedKitId, setSelectedKitId] = useState("");
   const [recipient, setRecipient] = useState("");
   const [notes, setNotes] = useState("");
+  const [warehouses, setWarehouses] = useState<WarehouseType[]>([]);
+  const [isLoadingWarehouses, setIsLoadingWarehouses] = useState(false);
+  const [warehouseId, setWarehouseId] = useState<string>("__none__");
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      setIsLoadingWarehouses(true);
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user || cancelled) {
+        setIsLoadingWarehouses(false);
+        return;
+      }
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("organization_id, country_code")
+        .eq("id", user.id)
+        .single();
+      if (!profile || cancelled) {
+        setIsLoadingWarehouses(false);
+        return;
+      }
+      const cc = profile.country_code || "MX";
+      const { data: whData } = await supabase
+        .from("warehouses")
+        .select("*")
+        .eq("organization_id", profile.organization_id)
+        .eq("country_code", cc)
+        .order("name", { ascending: true });
+      if (!cancelled) {
+        setWarehouses(whData || []);
+        setIsLoadingWarehouses(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const selectedKit = kits.find((k) => k.id === selectedKitId);
 
@@ -65,6 +109,7 @@ export function KitExitSheet({
     setSelectedKitId("");
     setRecipient("");
     setNotes("");
+    setWarehouseId("__none__");
     setIsSubmitting(false);
   }
 
@@ -76,6 +121,8 @@ export function KitExitSheet({
       kit_id: selectedKitId,
       recipient: recipient || undefined,
       notes: notes || undefined,
+      warehouse_id:
+        warehouseId && warehouseId !== "__none__" ? warehouseId : undefined,
     });
 
     if (result?.error) {
@@ -135,6 +182,33 @@ export function KitExitSheet({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="kit-warehouse">Almacén</Label>
+              <Select
+                value={warehouseId}
+                onValueChange={setWarehouseId}
+                disabled={isSubmitting || isLoadingWarehouses}
+              >
+                <SelectTrigger id="kit-warehouse" className="h-12">
+                  <SelectValue placeholder="Sin almacén (solo global)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Sin almacén (solo global)</SelectItem>
+                  {warehouses.map((w) => (
+                    <SelectItem key={w.id} value={w.id}>
+                      <div className="flex items-center gap-2">
+                        <Warehouse className="h-4 w-4" />
+                        {w.name}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-slate-500">
+                Opcional: descuenta stock también en la ubicación elegida.
+              </p>
             </div>
 
             {/* Detalle del Kit seleccionado */}

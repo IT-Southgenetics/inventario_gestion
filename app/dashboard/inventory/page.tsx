@@ -17,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -34,6 +35,7 @@ import type { Product, Category, Kit, KitProduct } from "@/types/database";
 
 type ProductWithCategory = Product & {
   category?: Category;
+  warehouseBreakdown?: { name: string; quantity: number }[];
 };
 
 type KitWithProducts = Kit & {
@@ -58,6 +60,12 @@ export default function InventoryPage() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [productToDelete, setProductToDelete] = useState<ProductWithCategory | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteProductInfo, setDeleteProductInfo] = useState<{
+    loading: boolean;
+    movementCount: number;
+    inKits: boolean;
+  } | null>(null);
+  const [confirmDeleteMovements, setConfirmDeleteMovements] = useState(false);
 
   // Kit states
   const [kits, setKits] = useState<KitWithProducts[]>([]);
@@ -124,12 +132,47 @@ export default function InventoryPage() {
       console.error("Error al cargar categorías:", categoriesError);
     }
 
+    const categoriesList = categoriesData || [];
+    const pids = (productsData || []).map((p: Product) => p.id);
+    const breakdownByProduct: Record<string, { name: string; quantity: number }[]> =
+      {};
+
+    if (pids.length > 0) {
+      const { data: wsRows } = await supabase
+        .from("warehouse_stock")
+        .select("product_id, warehouse_id, current_stock")
+        .in("product_id", pids)
+        .gt("current_stock", 0);
+
+      const whIds = [...new Set((wsRows || []).map((r) => r.warehouse_id))];
+      const { data: whRows } =
+        whIds.length > 0
+          ? await supabase.from("warehouses").select("id, name").in("id", whIds)
+          : { data: [] as { id: string; name: string }[] };
+
+      const whName = Object.fromEntries(
+        (whRows || []).map((w) => [w.id, w.name])
+      );
+
+      for (const r of wsRows || []) {
+        const name = whName[r.warehouse_id] || "Almacén";
+        if (!breakdownByProduct[r.product_id]) {
+          breakdownByProduct[r.product_id] = [];
+        }
+        breakdownByProduct[r.product_id].push({
+          name,
+          quantity: r.current_stock,
+        });
+      }
+    }
+
     // Mapear productos con información de categoría
     const productsWithCategory = (productsData || []).map((p: Product) => {
-      const category = categories.find((c) => c.id === p.category_id);
+      const category = categoriesList.find((c) => c.id === p.category_id);
       return {
         ...p,
         category,
+        warehouseBreakdown: breakdownByProduct[p.id] || [],
       };
     });
 
@@ -164,13 +207,65 @@ export default function InventoryPage() {
     }
 
     setProducts(productsWithCategory);
-    setCategories(categoriesData || []);
+    setCategories(categoriesList);
     setIsLoading(false);
   }, []);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    if (!deleteDialogOpen || !productToDelete) {
+      setDeleteProductInfo(null);
+      setConfirmDeleteMovements(false);
+      return;
+    }
+
+    setConfirmDeleteMovements(false);
+    let cancelled = false;
+
+    (async () => {
+      setDeleteProductInfo({ loading: true, movementCount: 0, inKits: false });
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("organization_id, country_code")
+        .eq("id", user.id)
+        .single();
+
+      if (!profile || cancelled) return;
+
+      const cc = profile.country_code || "MX";
+
+      const [movRes, kpRes] = await Promise.all([
+        supabase
+          .from("movements")
+          .select("*", { count: "exact", head: true })
+          .eq("product_id", productToDelete.id)
+          .eq("organization_id", profile.organization_id)
+          .eq("country_code", cc),
+        supabase.from("kit_products").select("id").eq("product_id", productToDelete.id),
+      ]);
+
+      if (cancelled) return;
+
+      setDeleteProductInfo({
+        loading: false,
+        movementCount: movRes.count ?? 0,
+        inKits: (kpRes.data?.length ?? 0) > 0,
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [deleteDialogOpen, productToDelete?.id]);
 
   // Filtrar productos
   const filteredProducts = products.filter((product) => {
@@ -222,8 +317,19 @@ export default function InventoryPage() {
   async function handleDeleteProduct() {
     if (!productToDelete) return;
 
+    const movementCount = deleteProductInfo?.movementCount ?? 0;
+    const needsMovementConfirm = movementCount > 0;
+    if (needsMovementConfirm && !confirmDeleteMovements) {
+      toast.error(
+        "Confirma que deseas eliminar también el historial de movimientos de este producto."
+      );
+      return;
+    }
+
     setIsDeleting(true);
-    const result = await deleteProduct(productToDelete.id);
+    const result = await deleteProduct(productToDelete.id, {
+      deleteMovementHistory: needsMovementConfirm ? confirmDeleteMovements : false,
+    });
 
     if (result?.error) {
       toast.error(result.error);
@@ -235,6 +341,8 @@ export default function InventoryPage() {
       toast.success(result.message || "Producto eliminado correctamente");
       setDeleteDialogOpen(false);
       setProductToDelete(null);
+      setConfirmDeleteMovements(false);
+      setDeleteProductInfo(null);
       loadData();
     }
     setIsDeleting(false);
@@ -547,6 +655,20 @@ export default function InventoryPage() {
                             </span>
                           )}
                         </div>
+                        {product.warehouseBreakdown &&
+                          product.warehouseBreakdown.length > 0 && (
+                            <div className="flex flex-wrap gap-1.5 mt-2">
+                              {product.warehouseBreakdown.map((row, i) => (
+                                <Badge
+                                  key={`${row.name}-${i}`}
+                                  variant="secondary"
+                                  className="text-xs font-normal bg-slate-100 text-slate-700"
+                                >
+                                  {row.name}: {row.quantity} u.
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
                       </div>
                       <div className="flex items-center gap-2">
                         {stockStatus.status === "low" || stockStatus.status === "empty" ? (
@@ -662,13 +784,90 @@ export default function InventoryPage() {
       />
 
       {/* Dialog de Confirmación para Eliminar Producto */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+      <Dialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          setDeleteDialogOpen(open);
+          if (!open) {
+            setProductToDelete(null);
+            setConfirmDeleteMovements(false);
+            setDeleteProductInfo(null);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>¿Eliminar producto?</DialogTitle>
-            <DialogDescription>
-              Esta acción no se puede deshacer. Se eliminará permanentemente el producto{" "}
-              <strong>{productToDelete?.name}</strong> y todos sus datos asociados.
+            <DialogDescription asChild>
+              <div className="space-y-3 text-sm text-slate-600">
+                <p>
+                  Esta acción no se puede deshacer. Se eliminará permanentemente el producto{" "}
+                  <strong className="text-slate-900">{productToDelete?.name}</strong>.
+                </p>
+
+                {deleteProductInfo?.loading && (
+                  <p className="text-slate-500">Comprobando historial y kits…</p>
+                )}
+
+                {!deleteProductInfo?.loading && deleteProductInfo?.inKits && (
+                  <div
+                    className="flex gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-red-800"
+                    role="alert"
+                  >
+                    <AlertTriangle className="h-5 w-5 shrink-0" />
+                    <p>
+                      Este producto forma parte de uno o más <strong>kits</strong>. Quita el
+                      producto de esos kits (editando cada kit) y luego podrás eliminarlo.
+                    </p>
+                  </div>
+                )}
+
+                {!deleteProductInfo?.loading &&
+                  !deleteProductInfo?.inKits &&
+                  (deleteProductInfo?.movementCount ?? 0) > 0 && (
+                    <div
+                      className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-950"
+                      role="alert"
+                    >
+                      <AlertTriangle className="h-5 w-5 shrink-0 text-amber-700" />
+                      <div className="space-y-2">
+                        <p>
+                          Hay{" "}
+                          <strong>
+                            {deleteProductInfo?.movementCount ?? 0}{" "}
+                            {(deleteProductInfo?.movementCount ?? 0) === 1
+                              ? "movimiento"
+                              : "movimientos"}
+                          </strong>{" "}
+                          registrados para este producto. La base de datos no permite borrar el
+                          producto sin quitar antes ese historial.
+                        </p>
+                        <label className="flex cursor-pointer items-start gap-2 text-sm font-normal">
+                          <input
+                            type="checkbox"
+                            className="mt-1 h-4 w-4 rounded border-slate-300"
+                            checked={confirmDeleteMovements}
+                            onChange={(e) => setConfirmDeleteMovements(e.target.checked)}
+                            disabled={isDeleting}
+                          />
+                          <span>
+                            También eliminar todo el historial de movimientos de este producto
+                            (entradas y salidas). Es irreversible.
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
+                {!deleteProductInfo?.loading &&
+                  !deleteProductInfo?.inKits &&
+                  (deleteProductInfo?.movementCount ?? 0) === 0 && (
+                    <p className="text-slate-500">
+                      No hay movimientos registrados para este producto; puedes eliminarlo de
+                      inmediato.
+                    </p>
+                  )}
+              </div>
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -677,6 +876,8 @@ export default function InventoryPage() {
               onClick={() => {
                 setDeleteDialogOpen(false);
                 setProductToDelete(null);
+                setConfirmDeleteMovements(false);
+                setDeleteProductInfo(null);
               }}
               disabled={isDeleting}
             >
@@ -685,7 +886,12 @@ export default function InventoryPage() {
             <Button
               variant="destructive"
               onClick={handleDeleteProduct}
-              disabled={isDeleting}
+              disabled={
+                isDeleting ||
+                deleteProductInfo?.loading ||
+                deleteProductInfo?.inKits === true ||
+                ((deleteProductInfo?.movementCount ?? 0) > 0 && !confirmDeleteMovements)
+              }
             >
               {isDeleting ? "Eliminando..." : "Eliminar"}
             </Button>

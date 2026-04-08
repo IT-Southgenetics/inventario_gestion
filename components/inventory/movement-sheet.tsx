@@ -14,6 +14,7 @@ import {
   Calculator,
   ChevronDown,
   ChevronUp,
+  Warehouse,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,7 +43,7 @@ import {
   AR_TAXES,
 } from "@/lib/countries";
 import toast from "react-hot-toast";
-import type { Product, Supplier } from "@/types/database";
+import type { Product, Supplier, Warehouse as WarehouseType } from "@/types/database";
 
 interface MovementSheetProps {
   open: boolean;
@@ -63,6 +64,9 @@ export function MovementSheet({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [isLoadingSuppliers, setIsLoadingSuppliers] = useState(false);
+  const [warehouses, setWarehouses] = useState<WarehouseType[]>([]);
+  const [isLoadingWarehouses, setIsLoadingWarehouses] = useState(false);
+  const [warehouseId, setWarehouseId] = useState<string>("__none__");
   const [countryCode, setCountryCode] = useState<string>("MX");
 
   // Form state
@@ -87,6 +91,48 @@ export function MovementSheet({
       loadSuppliers();
     }
   }, [open, movementType]);
+
+  useEffect(() => {
+    if (open) {
+      loadWarehouses();
+    }
+  }, [open]);
+
+  async function loadWarehouses() {
+    setIsLoadingWarehouses(true);
+    const supabase = createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      setIsLoadingWarehouses(false);
+      return;
+    }
+
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (!profile) {
+      setIsLoadingWarehouses(false);
+      return;
+    }
+
+    const cc = profile.country_code || "MX";
+
+    const { data: whData } = await supabase
+      .from("warehouses")
+      .select("*")
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", cc)
+      .order("name", { ascending: true });
+
+    setWarehouses(whData || []);
+    setIsLoadingWarehouses(false);
+  }
 
   async function loadSuppliers() {
     setIsLoadingSuppliers(true);
@@ -137,6 +183,7 @@ export function MovementSheet({
     setNotes("");
     setPrecioBase("");
     setShowArCalculator(false);
+    setWarehouseId("__none__");
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -153,6 +200,9 @@ export function MovementSheet({
     if (supplierId) formData.append("supplier_id", supplierId);
     if (recipient) formData.append("recipient", recipient);
     if (notes) formData.append("notes", notes);
+    if (warehouseId && warehouseId !== "__none__") {
+      formData.append("warehouse_id", warehouseId);
+    }
 
     const result = await registerMovement(formData);
 
@@ -319,6 +369,34 @@ export function MovementSheet({
               </div>
               <p className="text-xs text-slate-500">
                 Fecha real del movimiento (puede ser distinta a hoy)
+              </p>
+            </div>
+
+            {/* Almacén (opcional) */}
+            <div className="space-y-2">
+              <Label htmlFor="warehouse">Almacén</Label>
+              <Select
+                value={warehouseId}
+                onValueChange={setWarehouseId}
+                disabled={isSubmitting || isLoadingWarehouses}
+              >
+                <SelectTrigger id="warehouse" className="h-12">
+                  <SelectValue placeholder="Sin almacén (stock solo global)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Sin almacén (solo global)</SelectItem>
+                  {warehouses.map((w) => (
+                    <SelectItem key={w.id} value={w.id}>
+                      <div className="flex items-center gap-2">
+                        <Warehouse className="h-4 w-4" />
+                        {w.name}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-slate-500">
+                Si eliges un almacén, el movimiento actualiza también el stock en esa ubicación.
               </p>
             </div>
 

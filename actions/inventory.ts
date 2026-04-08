@@ -35,11 +35,20 @@ const kitSchema = z.object({
   })).min(1, "El kit debe contener al menos un producto"),
 });
 
+const warehouseSchema = z.object({
+  name: z.string().min(1, "El nombre es requerido"),
+  description: z.string().optional().nullable(),
+});
+
 const movementSchema = z.object({
   product_id: z.string().uuid("ID de producto inválido"),
   type: z.enum(["Entrada", "Salida"], {
     message: "El tipo debe ser 'Entrada' o 'Salida'",
   }),
+  warehouse_id: z
+    .union([z.string().uuid("ID de almacén inválido"), z.literal("")])
+    .optional()
+    .transform((v) => (!v || v === "" ? null : v)),
   quantity: z.coerce
     .number({
       message: "La cantidad debe ser un número",
@@ -167,6 +176,194 @@ export async function createSupplier(formData: FormData) {
     console.error("Error inesperado en createSupplier:", error);
     return {
       error: error instanceof Error ? error.message : "Error inesperado al crear proveedor",
+    };
+  }
+}
+
+export async function createWarehouse(formData: FormData) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const rawData = {
+      name: formData.get("name") as string,
+      description: (formData.get("description") as string) || null,
+    };
+
+    const validatedData = warehouseSchema.parse(rawData);
+
+    const { data, error } = await supabase
+      .from("warehouses")
+      .insert({
+        name: validatedData.name,
+        description: validatedData.description?.trim() || null,
+        organization_id: profile.organization_id,
+        country_code: profile.country_code || "MX",
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Error al crear almacén:", error);
+      return { error: error.message };
+    }
+
+    revalidatePath("/dashboard/warehouses");
+    revalidatePath("/dashboard/inventory");
+    return {
+      success: true,
+      data,
+      message: "Almacén creado correctamente",
+    };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return { error: error.issues[0]?.message || "Error de validación" };
+    }
+    console.error("Error inesperado en createWarehouse:", error);
+    return {
+      error: error instanceof Error ? error.message : "Error inesperado al crear almacén",
+    };
+  }
+}
+
+export async function updateWarehouse(formData: FormData) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const warehouseId = formData.get("warehouse_id") as string;
+    if (!warehouseId || !z.string().uuid().safeParse(warehouseId).success) {
+      return { error: "ID de almacén inválido" };
+    }
+
+    const rawData = {
+      name: formData.get("name") as string,
+      description: (formData.get("description") as string) || null,
+    };
+
+    const validatedData = warehouseSchema.parse(rawData);
+
+    const { data, error } = await supabase
+      .from("warehouses")
+      .update({
+        name: validatedData.name,
+        description: validatedData.description?.trim() || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", warehouseId)
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", profile.country_code || "MX")
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Error al actualizar almacén:", error);
+      return { error: error.message };
+    }
+
+    if (!data) {
+      return { error: "Almacén no encontrado" };
+    }
+
+    revalidatePath("/dashboard/warehouses");
+    revalidatePath("/dashboard/inventory");
+    return {
+      success: true,
+      data,
+      message: "Almacén actualizado correctamente",
+    };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return { error: error.issues[0]?.message || "Error de validación" };
+    }
+    console.error("Error inesperado en updateWarehouse:", error);
+    return {
+      error: error instanceof Error ? error.message : "Error inesperado al actualizar almacén",
+    };
+  }
+}
+
+export async function deleteWarehouse(warehouseId: string) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    if (!z.string().uuid().safeParse(warehouseId).success) {
+      return { error: "ID de almacén inválido" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const { error } = await supabase
+      .from("warehouses")
+      .delete()
+      .eq("id", warehouseId)
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", profile.country_code || "MX");
+
+    if (error) {
+      console.error("Error al eliminar almacén:", error);
+      return { error: error.message };
+    }
+
+    revalidatePath("/dashboard/warehouses");
+    revalidatePath("/dashboard/inventory");
+    revalidatePath("/dashboard/history");
+    revalidatePath("/dashboard/reports");
+    return {
+      success: true,
+      message: "Almacén eliminado correctamente",
+    };
+  } catch (error) {
+    console.error("Error inesperado en deleteWarehouse:", error);
+    return {
+      error: error instanceof Error ? error.message : "Error inesperado al eliminar almacén",
     };
   }
 }
@@ -325,6 +522,7 @@ export async function registerMovement(formData: FormData) {
       supplier_id: formData.get("supplier_id") as string | null,
       recipient: formData.get("recipient") as string | null,
       notes: formData.get("notes") as string | null,
+      warehouse_id: (formData.get("warehouse_id") as string) || "",
     };
 
     // Debugging: Log de datos recibidos (solo en desarrollo)
@@ -351,6 +549,7 @@ export async function registerMovement(formData: FormData) {
       supplier_id: rawData.supplier_id || null,
       recipient: rawData.recipient || null,
       notes: rawData.notes || null,
+      warehouse_id: rawData.warehouse_id || "",
     });
 
     // Verificar que el producto pertenezca al mismo país del usuario
@@ -403,20 +602,56 @@ export async function registerMovement(formData: FormData) {
       }
     }
 
+    if (validatedData.warehouse_id) {
+      const { data: wh, error: whError } = await supabase
+        .from("warehouses")
+        .select("id, country_code")
+        .eq("id", validatedData.warehouse_id)
+        .eq("organization_id", profile.organization_id)
+        .single();
+
+      if (whError || !wh) {
+        return { error: "Almacén no encontrado" };
+      }
+
+      if (wh.country_code !== (profile.country_code || "MX")) {
+        return { error: "No puedes usar un almacén de otro país" };
+      }
+
+      if (validatedData.type === "Salida") {
+        const { data: wsRow } = await supabase
+          .from("warehouse_stock")
+          .select("current_stock")
+          .eq("warehouse_id", validatedData.warehouse_id)
+          .eq("product_id", validatedData.product_id)
+          .maybeSingle();
+
+        const whStock = wsRow?.current_stock ?? 0;
+        if (whStock < validatedData.quantity) {
+          return {
+            error: `Stock insuficiente en el almacén seleccionado. Disponible: ${whStock}, solicitado: ${validatedData.quantity}`,
+          };
+        }
+      }
+    }
+
     // Insertar movimiento (el trigger actualizará el stock automáticamente)
     const { data, error } = await supabase
       .from("movements")
       .insert({
-        ...validatedData,
+        product_id: validatedData.product_id,
+        type: validatedData.type,
+        quantity: validatedData.quantity,
+        movement_date: validatedData.movement_date,
+        lot_number: validatedData.lot_number || null,
+        expiration_date: validatedData.expiration_date || null,
+        supplier_id: validatedData.supplier_id || null,
+        recipient: validatedData.recipient || null,
+        notes: validatedData.notes || null,
+        warehouse_id: validatedData.warehouse_id,
         organization_id: profile.organization_id,
         country_code: profile.country_code || "MX",
         created_by: user.id,
-        movement_date: validatedData.movement_date,
-        supplier_id: validatedData.supplier_id || null,
-        recipient: validatedData.recipient || null,
-        lot_number: validatedData.lot_number || null,
-        expiration_date: validatedData.expiration_date || null,
-        notes: validatedData.notes || null,
       })
       .select()
       .single();
@@ -477,6 +712,9 @@ export async function registerMovement(formData: FormData) {
 
     revalidatePath("/dashboard/inventory");
     revalidatePath("/dashboard");
+    revalidatePath("/dashboard/history");
+    revalidatePath("/dashboard/reports");
+    revalidatePath("/dashboard/warehouses");
     return {
       success: true,
       data,
@@ -493,8 +731,8 @@ export async function registerMovement(formData: FormData) {
       }
 
       // Obtener el primer error o un mensaje genérico
-      const firstError = error.issues && error.issues.length > 0 
-        ? error.issues[0].message 
+      const firstError = error.issues && error.issues.length > 0
+        ? error.issues[0].message
         : "Error de validación";
       
       // Si hay múltiples errores, combinarlos en desarrollo
@@ -697,7 +935,10 @@ export async function updateProduct(productId: string, formData: FormData) {
   }
 }
 
-export async function deleteProduct(productId: string) {
+export async function deleteProduct(
+  productId: string,
+  options?: { deleteMovementHistory?: boolean }
+) {
   try {
     const supabase = await createClient();
     const {
@@ -723,13 +964,16 @@ export async function deleteProduct(productId: string) {
       };
     }
 
+    const countryCode = profile.country_code || "MX";
+    const deleteMovementHistory = options?.deleteMovementHistory === true;
+
     // Verificar que el producto pertenezca a la organización y país
     const { data: existingProduct } = await supabase
       .from("products")
       .select("id")
       .eq("id", productId)
       .eq("organization_id", profile.organization_id)
-      .eq("country_code", profile.country_code || "MX")
+      .eq("country_code", countryCode)
       .single();
 
     if (!existingProduct) {
@@ -738,22 +982,83 @@ export async function deleteProduct(productId: string) {
       };
     }
 
-    // Eliminar producto
+    const { data: kitLinks, error: kitLinksError } = await supabase
+      .from("kit_products")
+      .select("id")
+      .eq("product_id", productId);
+
+    if (kitLinksError) {
+      console.error("Error al verificar kits del producto:", kitLinksError);
+      return { error: kitLinksError.message };
+    }
+
+    if (kitLinks && kitLinks.length > 0) {
+      return {
+        error:
+          "Este producto está incluido en uno o más kits. Edita esos kits y quita el producto antes de eliminarlo.",
+      };
+    }
+
+    const { count: movementCount, error: movementCountError } = await supabase
+      .from("movements")
+      .select("*", { count: "exact", head: true })
+      .eq("product_id", productId)
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode);
+
+    if (movementCountError) {
+      console.error("Error al contar movimientos:", movementCountError);
+      return { error: movementCountError.message };
+    }
+
+    const nMovements = movementCount ?? 0;
+    if (nMovements > 0 && !deleteMovementHistory) {
+      return {
+        error:
+          nMovements === 1
+            ? "Este producto tiene 1 movimiento en el historial. Para eliminarlo, confirma también el borrado de ese historial en el cuadro de diálogo."
+            : `Este producto tiene ${nMovements} movimientos en el historial. Para eliminarlo, confirma también el borrado de ese historial en el cuadro de diálogo.`,
+      };
+    }
+
+    if (nMovements > 0 && deleteMovementHistory) {
+      const { error: delMovError } = await supabase
+        .from("movements")
+        .delete()
+        .eq("product_id", productId)
+        .eq("organization_id", profile.organization_id)
+        .eq("country_code", countryCode);
+
+      if (delMovError) {
+        console.error("Error al eliminar movimientos del producto:", delMovError);
+        return { error: delMovError.message };
+      }
+    }
+
     const { error } = await supabase
       .from("products")
       .delete()
       .eq("id", productId)
       .eq("organization_id", profile.organization_id)
-      .eq("country_code", profile.country_code || "MX");
+      .eq("country_code", countryCode);
 
     if (error) {
       console.error("Error al eliminar producto:", error);
+      const msg = error.message || "";
+      if (msg.includes("fk_movements_product") || msg.includes("movements")) {
+        return {
+          error:
+            "No se puede eliminar el producto porque aún hay movimientos asociados. Vuelve a intentar marcando la opción de eliminar el historial.",
+        };
+      }
       return {
         error: error.message,
       };
     }
 
     revalidatePath("/dashboard/inventory");
+    revalidatePath("/dashboard/history");
+    revalidatePath("/dashboard/reports");
     return {
       success: true,
       message: "Producto eliminado correctamente",
@@ -1064,6 +1369,7 @@ export async function registerKitExit(data: {
   kit_id: string;
   recipient?: string;
   notes?: string;
+  warehouse_id?: string | null;
 }) {
   try {
     const supabase = await createClient();
@@ -1083,6 +1389,15 @@ export async function registerKitExit(data: {
 
     if (profileError || !profile) {
       return { error: "Error al obtener información del usuario" };
+    }
+
+    const warehouseId =
+      data.warehouse_id && data.warehouse_id.trim() !== ""
+        ? data.warehouse_id
+        : null;
+
+    if (warehouseId && !z.string().uuid().safeParse(warehouseId).success) {
+      return { error: "ID de almacén inválido" };
     }
 
     const { data: kit, error: kitError } = await supabase
@@ -1128,6 +1443,40 @@ export async function registerKitExit(data: {
       }
     }
 
+    if (warehouseId) {
+      const { data: wh, error: whError } = await supabase
+        .from("warehouses")
+        .select("id, country_code")
+        .eq("id", warehouseId)
+        .eq("organization_id", profile.organization_id)
+        .single();
+
+      if (whError || !wh) {
+        return { error: "Almacén no encontrado" };
+      }
+
+      if (wh.country_code !== (profile.country_code || "MX")) {
+        return { error: "No puedes usar un almacén de otro país" };
+      }
+
+      for (const kp of kitProducts) {
+        const product = products.find((p) => p.id === kp.product_id);
+        const { data: wsRow } = await supabase
+          .from("warehouse_stock")
+          .select("current_stock")
+          .eq("warehouse_id", warehouseId)
+          .eq("product_id", kp.product_id)
+          .maybeSingle();
+
+        const whStock = wsRow?.current_stock ?? 0;
+        if (whStock < kp.quantity) {
+          return {
+            error: `Stock insuficiente en el almacén para "${product?.name}". Disponible: ${whStock}, necesario: ${kp.quantity}`,
+          };
+        }
+      }
+    }
+
     const kitExitNote = `Salida por Kit: ${kit.name}${data.notes ? ` - ${data.notes}` : ""}`;
 
     const today = new Date().toISOString().split("T")[0];
@@ -1144,6 +1493,7 @@ export async function registerKitExit(data: {
       lot_number: null,
       expiration_date: null,
       supplier_id: null,
+      warehouse_id: warehouseId,
     }));
 
     const { error: movementsError } = await supabase
@@ -1203,6 +1553,9 @@ export async function registerKitExit(data: {
 
     revalidatePath("/dashboard/inventory");
     revalidatePath("/dashboard");
+    revalidatePath("/dashboard/history");
+    revalidatePath("/dashboard/reports");
+    revalidatePath("/dashboard/warehouses");
     return {
       success: true,
       message: `Salida del kit "${kit.name}" registrada correctamente (${kitProducts.length} productos)`,
