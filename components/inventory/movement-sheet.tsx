@@ -68,6 +68,9 @@ export function MovementSheet({
   // Form state
   const [productId, setProductId] = useState("");
   const [quantity, setQuantity] = useState("");
+  const [movementDate, setMovementDate] = useState(
+    new Date().toISOString().split("T")[0]
+  );
   const [lotNumber, setLotNumber] = useState("");
   const [expirationDate, setExpirationDate] = useState("");
   const [supplierId, setSupplierId] = useState("");
@@ -126,6 +129,7 @@ export function MovementSheet({
   function resetForm() {
     setProductId("");
     setQuantity("");
+    setMovementDate(new Date().toISOString().split("T")[0]);
     setLotNumber("");
     setExpirationDate("");
     setSupplierId("");
@@ -143,6 +147,7 @@ export function MovementSheet({
     formData.append("product_id", productId);
     formData.append("type", movementType);
     formData.append("quantity", quantity);
+    formData.append("movement_date", movementDate);
     if (lotNumber) formData.append("lot_number", lotNumber);
     if (expirationDate) formData.append("expiration_date", expirationDate);
     if (supplierId) formData.append("supplier_id", supplierId);
@@ -295,6 +300,26 @@ export function MovementSheet({
                 className="h-12"
                 placeholder="Ingresa la cantidad"
               />
+            </div>
+
+            {/* Fecha del Movimiento */}
+            <div className="space-y-2">
+              <Label htmlFor="movement_date">Fecha del Movimiento *</Label>
+              <div className="relative">
+                <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-slate-400" />
+                <Input
+                  id="movement_date"
+                  type="date"
+                  value={movementDate}
+                  onChange={(e) => setMovementDate(e.target.value)}
+                  required
+                  disabled={isSubmitting}
+                  className="pl-10 h-12"
+                />
+              </div>
+              <p className="text-xs text-slate-500">
+                Fecha real del movimiento (puede ser distinta a hoy)
+              </p>
             </div>
 
             {/* Campos condicionales para Entrada */}

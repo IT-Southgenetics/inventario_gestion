@@ -11,6 +11,7 @@ import {
   X,
   Building2,
   History,
+  FileSpreadsheet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -50,10 +51,15 @@ const navigationItems: Array<{
     icon: History,
   },
   {
+    name: "Reportes",
+    href: "/dashboard/reports",
+    icon: FileSpreadsheet,
+  },
+  {
     name: "Usuarios",
     href: "/dashboard/users",
     icon: Users,
-    adminOnly: false, // Visible para todos por ahora
+    adminOnly: false,
   },
 ];
 

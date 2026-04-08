@@ -69,6 +69,7 @@ export interface Movement {
   product_id: string;
   type: "Entrada" | "Salida";
   quantity: number;
+  movement_date: string;
   lot_number: string | null;
   expiration_date: string | null;
   supplier_id: string | null;

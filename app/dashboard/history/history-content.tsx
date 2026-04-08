@@ -184,6 +184,15 @@ export function HistoryContent() {
     });
   };
 
+  const formatMovementDate = (dateString: string) => {
+    const date = new Date(dateString + "T00:00:00");
+    return date.toLocaleDateString("es-ES", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  };
+
   return (
     <div className="container mx-auto px-4 py-6 space-y-6">
       {/* Header */}
@@ -278,12 +287,13 @@ export function HistoryContent() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Fecha</TableHead>
+                        <TableHead>Fecha Mov.</TableHead>
                         {!selectedProduct && <TableHead>Producto</TableHead>}
                         <TableHead>Tipo</TableHead>
                         <TableHead className="text-right">Cantidad</TableHead>
                         <TableHead>Detalle/Traza</TableHead>
                         <TableHead>Usuario</TableHead>
+                        <TableHead>Registrado</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -294,7 +304,9 @@ export function HistoryContent() {
                             <TableCell className="text-slate-600">
                               <div className="flex items-center gap-2">
                                 <Calendar className="h-4 w-4 text-slate-400" />
-                                {formatDate(movement.created_at)}
+                                {movement.movement_date
+                                  ? formatMovementDate(movement.movement_date)
+                                  : formatDate(movement.created_at)}
                               </div>
                             </TableCell>
                             {!selectedProduct && (
@@ -369,6 +381,9 @@ export function HistoryContent() {
                                 {movement.profiles?.email?.split("@")[0] || "Sistema"}
                               </span>
                             </TableCell>
+                            <TableCell className="text-xs text-slate-400">
+                              {formatDate(movement.created_at)}
+                            </TableCell>
                           </TableRow>
                         );
                       })}
@@ -442,7 +457,9 @@ export function HistoryContent() {
                       <div className="space-y-2 text-sm">
                         <div className="flex items-center gap-2 text-slate-600">
                           <Calendar className="h-4 w-4 text-slate-400" />
-                          {formatDate(movement.created_at)}
+                          {movement.movement_date
+                            ? formatMovementDate(movement.movement_date)
+                            : formatDate(movement.created_at)}
                         </div>
 
                         {isEntrada ? (

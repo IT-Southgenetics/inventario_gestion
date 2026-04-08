@@ -40,7 +40,6 @@ const movementSchema = z.object({
   type: z.enum(["Entrada", "Salida"], {
     message: "El tipo debe ser 'Entrada' o 'Salida'",
   }),
-  // Usa coerce para convertir el string del input a número automáticamente
   quantity: z.coerce
     .number({
       message: "La cantidad debe ser un número",
@@ -48,7 +47,7 @@ const movementSchema = z.object({
     .int("La cantidad debe ser un número entero")
     .positive("La cantidad debe ser mayor a 0")
     .min(1, "La cantidad debe ser al menos 1"),
-  // Campos opcionales
+  movement_date: z.string().min(1, "La fecha del movimiento es requerida"),
   lot_number: z.string().optional().nullable(),
   expiration_date: z.string().optional().nullable(),
   supplier_id: z.string().uuid("ID de proveedor inválido").optional().nullable(),
@@ -320,6 +319,7 @@ export async function registerMovement(formData: FormData) {
       product_id: formData.get("product_id") as string,
       type: formData.get("type") as string,
       quantity: formData.get("quantity") as string,
+      movement_date: formData.get("movement_date") as string,
       lot_number: formData.get("lot_number") as string | null,
       expiration_date: formData.get("expiration_date") as string | null,
       supplier_id: formData.get("supplier_id") as string | null,
@@ -345,6 +345,7 @@ export async function registerMovement(formData: FormData) {
       product_id: rawData.product_id || "",
       type: rawData.type || "",
       quantity: rawData.quantity || "0",
+      movement_date: rawData.movement_date || new Date().toISOString().split("T")[0],
       lot_number: rawData.lot_number || null,
       expiration_date: rawData.expiration_date || null,
       supplier_id: rawData.supplier_id || null,
@@ -410,6 +411,7 @@ export async function registerMovement(formData: FormData) {
         organization_id: profile.organization_id,
         country_code: profile.country_code || "MX",
         created_by: user.id,
+        movement_date: validatedData.movement_date,
         supplier_id: validatedData.supplier_id || null,
         recipient: validatedData.recipient || null,
         lot_number: validatedData.lot_number || null,
@@ -1128,10 +1130,12 @@ export async function registerKitExit(data: {
 
     const kitExitNote = `Salida por Kit: ${kit.name}${data.notes ? ` - ${data.notes}` : ""}`;
 
+    const today = new Date().toISOString().split("T")[0];
     const movements = kitProducts.map((kp) => ({
       product_id: kp.product_id,
       type: "Salida" as const,
       quantity: kp.quantity,
+      movement_date: today,
       organization_id: profile.organization_id,
       country_code: profile.country_code || "MX",
       created_by: user.id,
