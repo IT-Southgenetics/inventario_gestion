@@ -37,6 +37,17 @@ function bucketKey(expirationDate: string | null, lotNumber: string | null): str
   return `${normDate(expirationDate) ?? ""}\0${normLot(lotNumber) ?? ""}`;
 }
 
+/** Clave estable para comparar vencimiento/lote entre API y saldos calculados. */
+export function lotStockBucketKey(
+  expirationDate: string | null | undefined,
+  lotNumber: string | null | undefined
+): string {
+  return bucketKey(
+    expirationDate == null || expirationDate === "" ? null : expirationDate,
+    lotNumber == null || lotNumber === "" ? null : lotNumber
+  );
+}
+
 function expSortKey(expirationDate: string | null): number {
   const d = normDate(expirationDate);
   if (!d) return Number.POSITIVE_INFINITY;

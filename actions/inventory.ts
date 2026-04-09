@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import {
   computeLotBalancesForProduct,
+  lotStockBucketKey,
   validateSequentialLotConsumption,
   type LotMovementInput,
 } from "@/lib/kit-lot-balance";
@@ -647,6 +648,51 @@ export async function registerMovement(formData: FormData) {
           return {
             error: `Stock insuficiente en el almacén seleccionado. Disponible: ${whStock}, solicitado: ${validatedData.quantity}`,
           };
+        }
+
+        {
+          const { data: lotMovRows, error: lotMovErr } = await supabase
+            .from("movements")
+            .select("type, quantity, expiration_date, lot_number, created_at")
+            .eq("organization_id", profile.organization_id)
+            .eq("country_code", profile.country_code || "MX")
+            .eq("warehouse_id", validatedData.warehouse_id)
+            .eq("product_id", validatedData.product_id)
+            .order("created_at", { ascending: true });
+
+          if (!lotMovErr && lotMovRows && lotMovRows.length > 0) {
+            const inputs: LotMovementInput[] = lotMovRows.map((m) => ({
+              type: m.type as "Entrada" | "Salida",
+              quantity: m.quantity,
+              expiration_date: m.expiration_date,
+              lot_number: m.lot_number,
+              created_at: m.created_at,
+            }));
+            const balances = computeLotBalancesForProduct(inputs);
+
+            if (balances.some((b) => b.quantity > 0)) {
+              const viable = balances.filter((b) => b.quantity >= validatedData.quantity);
+              if (viable.length === 0) {
+                return {
+                  error:
+                    "Ningún lote con esa trazabilidad tiene stock suficiente en este almacén para la cantidad indicada. Revisá el vencimiento/lote o la cantidad.",
+                };
+              }
+              const reqKey = lotStockBucketKey(
+                validatedData.expiration_date,
+                validatedData.lot_number
+              );
+              const matched = viable.find(
+                (b) => lotStockBucketKey(b.expirationDate, b.lotNumber) === reqKey
+              );
+              if (!matched) {
+                return {
+                  error:
+                    "Seleccioná el vencimiento y lote de origen de esta salida (debe coincidir con una entrada en este almacén).",
+                };
+              }
+            }
+          }
         }
       }
     }

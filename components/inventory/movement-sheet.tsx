@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   ArrowDownCircle,
   ArrowUpCircle,
@@ -42,6 +42,14 @@ import {
   calcularPercepcionGanancias,
   AR_TAXES,
 } from "@/lib/countries";
+import {
+  computeLotBalancesForProduct,
+  decodeLotSelection,
+  encodeLotSelection,
+  formatLotLabel,
+  type LotBalance,
+  type LotMovementInput,
+} from "@/lib/kit-lot-balance";
 import toast from "react-hot-toast";
 import type { Product, Supplier, Warehouse as WarehouseType } from "@/types/database";
 
@@ -85,6 +93,10 @@ export function MovementSheet({
   const [showArCalculator, setShowArCalculator] = useState(false);
   const [precioBase, setPrecioBase] = useState("");
   const [incluirPercepcion, setIncluirPercepcion] = useState(true);
+
+  const [salidaLotBalances, setSalidaLotBalances] = useState<LotBalance[]>([]);
+  const [salidaLotKey, setSalidaLotKey] = useState("");
+  const [isLoadingSalidaLots, setIsLoadingSalidaLots] = useState(false);
 
   useEffect(() => {
     if (open && movementType === "Entrada") {
@@ -133,6 +145,123 @@ export function MovementSheet({
     setWarehouses(whData || []);
     setIsLoadingWarehouses(false);
   }
+
+  useEffect(() => {
+    if (!open || movementType !== "Salida" || !productId || warehouseId === "__none__") {
+      setSalidaLotBalances([]);
+      setSalidaLotKey("");
+      setIsLoadingSalidaLots(false);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      setIsLoadingSalidaLots(true);
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user || cancelled) {
+        setIsLoadingSalidaLots(false);
+        return;
+      }
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("organization_id, country_code")
+        .eq("id", user.id)
+        .single();
+
+      if (!profile || cancelled) {
+        setIsLoadingSalidaLots(false);
+        return;
+      }
+
+      const cc = profile.country_code || "MX";
+      const { data: movRows, error } = await supabase
+        .from("movements")
+        .select("type, quantity, expiration_date, lot_number, created_at")
+        .eq("organization_id", profile.organization_id)
+        .eq("country_code", cc)
+        .eq("warehouse_id", warehouseId)
+        .eq("product_id", productId)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        if (!cancelled) {
+          toast.error("Error al cargar lotes: " + error.message);
+          setSalidaLotBalances([]);
+          setSalidaLotKey("");
+          setIsLoadingSalidaLots(false);
+        }
+        return;
+      }
+
+      const inputs: LotMovementInput[] = (movRows || []).map((m) => ({
+        type: m.type as "Entrada" | "Salida",
+        quantity: m.quantity,
+        expiration_date: m.expiration_date,
+        lot_number: m.lot_number,
+        created_at: m.created_at,
+      }));
+
+      const balances = computeLotBalancesForProduct(inputs);
+      if (!cancelled) {
+        setSalidaLotBalances(balances);
+        setIsLoadingSalidaLots(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, movementType, productId, warehouseId]);
+
+  const qtyNum = useMemo(() => {
+    const n = parseInt(quantity, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }, [quantity]);
+
+  const salidaViableLots = useMemo(() => {
+    if (qtyNum <= 0) return [];
+    return salidaLotBalances.filter((b) => b.quantity >= qtyNum);
+  }, [salidaLotBalances, qtyNum]);
+
+  const needsSalidaLotPick =
+    movementType === "Salida" && warehouseId !== "__none__" && salidaLotBalances.length > 0;
+
+  const salidaLotStepOk = useMemo(() => {
+    if (movementType !== "Salida") return true;
+    if (warehouseId === "__none__") return true;
+    if (salidaLotBalances.length === 0) return true;
+    if (qtyNum <= 0) return false;
+    if (salidaViableLots.length === 0) return false;
+    return salidaViableLots.some(
+      (l) => encodeLotSelection(l.expirationDate, l.lotNumber) === salidaLotKey
+    );
+  }, [
+    movementType,
+    warehouseId,
+    salidaLotBalances.length,
+    qtyNum,
+    salidaViableLots,
+    salidaLotKey,
+  ]);
+
+  useEffect(() => {
+    if (!needsSalidaLotPick) return;
+    setSalidaLotKey((prev) => {
+      if (salidaViableLots.length === 0) return "";
+      if (prev) {
+        const still = salidaViableLots.find(
+          (l) => encodeLotSelection(l.expirationDate, l.lotNumber) === prev
+        );
+        if (still) return prev;
+      }
+      const first = salidaViableLots[0];
+      return encodeLotSelection(first.expirationDate, first.lotNumber);
+    });
+  }, [needsSalidaLotPick, salidaViableLots]);
 
   async function loadSuppliers() {
     setIsLoadingSuppliers(true);
@@ -184,6 +313,8 @@ export function MovementSheet({
     setPrecioBase("");
     setShowArCalculator(false);
     setWarehouseId("__none__");
+    setSalidaLotBalances([]);
+    setSalidaLotKey("");
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -195,8 +326,15 @@ export function MovementSheet({
     formData.append("type", movementType);
     formData.append("quantity", quantity);
     formData.append("movement_date", movementDate);
-    if (lotNumber) formData.append("lot_number", lotNumber);
-    if (expirationDate) formData.append("expiration_date", expirationDate);
+    if (movementType === "Entrada") {
+      if (lotNumber) formData.append("lot_number", lotNumber);
+      if (expirationDate) formData.append("expiration_date", expirationDate);
+    } else if (warehouseId !== "__none__" && salidaLotKey) {
+      const { expirationDate: salidaExp, lotNumber: salidaLot } =
+        decodeLotSelection(salidaLotKey);
+      if (salidaExp) formData.append("expiration_date", salidaExp);
+      if (salidaLot) formData.append("lot_number", salidaLot);
+    }
     if (supplierId) formData.append("supplier_id", supplierId);
     if (recipient) formData.append("recipient", recipient);
     if (notes) formData.append("notes", notes);
@@ -399,6 +537,60 @@ export function MovementSheet({
                 Si eliges un almacén, el movimiento actualiza también el stock en esa ubicación.
               </p>
             </div>
+
+            {movementType === "Salida" && warehouseId !== "__none__" && (
+              <div className="space-y-2">
+                {isLoadingSalidaLots ? (
+                  <p className="text-sm text-slate-500">Cargando vencimientos y lotes…</p>
+                ) : salidaLotBalances.length > 0 ? (
+                  <>
+                    <Label htmlFor="salida_lot">
+                      Vencimiento / lote de origen *
+                    </Label>
+                    {salidaViableLots.length > 0 ? (
+                      <Select
+                        value={salidaLotKey}
+                        onValueChange={setSalidaLotKey}
+                        disabled={isSubmitting}
+                        required
+                      >
+                        <SelectTrigger id="salida_lot" className="h-12">
+                          <SelectValue placeholder="Elegir vencimiento y lote" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {salidaViableLots.map((l) => {
+                            const k = encodeLotSelection(l.expirationDate, l.lotNumber);
+                            return (
+                              <SelectItem key={k} value={k}>
+                                {formatLotLabel(l)}
+                              </SelectItem>
+                            );
+                          })}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <p className="text-sm text-orange-600 flex items-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-3 py-2">
+                        <AlertTriangle className="h-4 w-4 shrink-0" />
+                        {qtyNum > 0
+                          ? "Ningún lote en este almacén tiene stock suficiente para la cantidad indicada."
+                          : "Indicá una cantidad válida para ver los lotes disponibles."}
+                      </p>
+                    )}
+                    {salidaViableLots.length > 0 && (
+                      <p className="text-xs text-slate-500">
+                        Mismo producto puede tener varios vencimientos; la salida debe indicar de
+                        cuál se descuenta el stock en este almacén.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    No hay movimientos con vencimiento/lote en este almacén para este producto;
+                    la salida no exige elegir lote.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Campos condicionales para Entrada */}
             {movementType === "Entrada" && (
@@ -635,7 +827,9 @@ export function MovementSheet({
                     ? "bg-teal-600 hover:bg-teal-700"
                     : "bg-red-600 hover:bg-red-700"
                 } text-white`}
-                disabled={isSubmitting || !productId || !quantity}
+                disabled={
+                  isSubmitting || !productId || !quantity || !salidaLotStepOk
+                }
               >
                 {isSubmitting ? (
                   <>
