@@ -68,6 +68,7 @@ export function HistoryContent() {
   const [products, setProducts] = useState<Product[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [editMovement, setEditMovement] = useState<MovementWithDetails | null>(null);
+  const [movementToDelete, setMovementToDelete] = useState<MovementWithDetails | null>(null);
   const [isSavingMovement, setIsSavingMovement] = useState(false);
   const [isDeletingMovement, setIsDeletingMovement] = useState(false);
   const [editForm, setEditForm] = useState({
@@ -303,6 +304,24 @@ export function HistoryContent() {
     await loadMovements();
   };
 
+  const handleConfirmDeleteFromRow = async () => {
+    if (!movementToDelete) return;
+    setIsDeletingMovement(true);
+
+    const result = await deleteMovement(movementToDelete.id);
+
+    if (result?.error) {
+      toast.error(result.error);
+      setIsDeletingMovement(false);
+      return;
+    }
+
+    toast.success(result?.message || "Movimiento eliminado");
+    setMovementToDelete(null);
+    setIsDeletingMovement(false);
+    await loadMovements();
+  };
+
   return (
     <div className="container mx-auto px-4 py-6 space-y-6">
       {/* Header */}
@@ -500,15 +519,28 @@ export function HistoryContent() {
                               {formatDate(movement.created_at)}
                             </TableCell>
                             <TableCell className="text-right">
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="outline"
-                                onClick={() => openEditMovementDialog(movement)}
-                              >
-                                <Pencil className="h-3.5 w-3.5 mr-1" />
-                                Editar
-                              </Button>
+                              <div className="flex items-center justify-end gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openEditMovementDialog(movement)}
+                                >
+                                  <Pencil className="h-3.5 w-3.5 mr-1" />
+                                  Editar
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  className="text-rose-600 border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                                  onClick={() => setMovementToDelete(movement)}
+                                  aria-label="Borrar movimiento"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5 mr-1" />
+                                  Borrar
+                                </Button>
+                              </div>
                             </TableCell>
                           </TableRow>
                         );
@@ -622,7 +654,7 @@ export function HistoryContent() {
                         <div className="text-xs text-slate-500 pt-2 border-t border-slate-200">
                           Por: {movement.profiles?.email?.split("@")[0] || "Sistema"}
                         </div>
-                        <div className="pt-1">
+                        <div className="pt-1 flex flex-wrap gap-2">
                           <Button
                             type="button"
                             size="sm"
@@ -631,6 +663,17 @@ export function HistoryContent() {
                           >
                             <Pencil className="h-3.5 w-3.5 mr-1" />
                             Editar
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="text-rose-600 border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+                            onClick={() => setMovementToDelete(movement)}
+                            aria-label="Borrar movimiento"
+                          >
+                            <Trash2 className="h-3.5 w-3.5 mr-1" />
+                            Borrar
                           </Button>
                         </div>
                       </div>
@@ -642,6 +685,56 @@ export function HistoryContent() {
           </div>
         </>
       )}
+
+      <Dialog
+        open={Boolean(movementToDelete)}
+        onOpenChange={(open) => {
+          if (!open && !isDeletingMovement) setMovementToDelete(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Eliminar movimiento</DialogTitle>
+            <DialogDescription>
+              ¿Seguro que querés eliminar este movimiento? El stock global y por almacén se
+              actualizarán. Esta acción no se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+          {movementToDelete && (
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              <p className="font-medium">
+                {movementToDelete.products?.name || "Producto"} ·{" "}
+                {movementToDelete.type === "Entrada" ? "Entrada" : "Salida"}{" "}
+                {movementToDelete.type === "Entrada" ? "+" : "-"}
+                {movementToDelete.quantity}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                {movementToDelete.movement_date
+                  ? formatMovementDate(movementToDelete.movement_date)
+                  : formatDate(movementToDelete.created_at)}
+              </p>
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setMovementToDelete(null)}
+              disabled={isDeletingMovement}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={handleConfirmDeleteFromRow}
+              disabled={isDeletingMovement}
+            >
+              {isDeletingMovement ? "Eliminando..." : "Eliminar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={Boolean(editMovement)}
