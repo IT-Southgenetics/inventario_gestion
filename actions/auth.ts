@@ -47,6 +47,8 @@ export async function inviteUser(formData: FormData) {
     };
   }
 
+  const inviteEmailNorm = email.trim().toLowerCase();
+
   // Verificar que el usuario actual es ADMIN
   const supabase = await createClient();
   const {
@@ -56,6 +58,13 @@ export async function inviteUser(formData: FormData) {
   if (!user) {
     return {
       error: "No autenticado",
+    };
+  }
+
+  const selfEmailNorm = (user.email || "").trim().toLowerCase();
+  if (inviteEmailNorm && selfEmailNorm && inviteEmailNorm === selfEmailNorm) {
+    return {
+      error: "No podés invitarte a vos mismo. Usá el correo de otra persona para dar de alta un usuario.",
     };
   }
 
@@ -69,6 +78,13 @@ export async function inviteUser(formData: FormData) {
   if (profileError || !profile) {
     return {
       error: "Error al obtener perfil de usuario",
+    };
+  }
+
+  const profileEmailNorm = (profile.email || "").trim().toLowerCase();
+  if (inviteEmailNorm && profileEmailNorm && inviteEmailNorm === profileEmailNorm) {
+    return {
+      error: "No podés invitarte a vos mismo. Usá el correo de otra persona para dar de alta un usuario.",
     };
   }
 

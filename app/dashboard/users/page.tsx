@@ -90,6 +90,19 @@ export default function UsersPage() {
   }
 
   async function handleInvite(formData: FormData) {
+    const inviteEmail = (formData.get("email") as string)?.trim().toLowerCase();
+    const supabase = createClient();
+    const {
+      data: { user: authUser },
+    } = await supabase.auth.getUser();
+    const selfEmail = authUser?.email?.trim().toLowerCase();
+    if (inviteEmail && selfEmail && inviteEmail === selfEmail) {
+      toast.error(
+        "No podés invitarte a vos mismo. Usá el correo de otra persona."
+      );
+      return;
+    }
+
     setIsLoading(true);
     const result = await inviteUser(formData);
 
