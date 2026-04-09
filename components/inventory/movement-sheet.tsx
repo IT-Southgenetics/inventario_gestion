@@ -457,6 +457,10 @@ export function MovementSheet({
                       className="pl-10 h-12"
                     />
                   </div>
+                  <p className="text-xs text-slate-500">
+                    El vencimiento se registra en cada entrada de inventario, no en la ficha del
+                    producto.
+                  </p>
                 </div>
 
                 {/* Calculadora de impuestos Argentina */}

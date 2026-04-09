@@ -3,6 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import {
+  computeLotBalancesForProduct,
+  validateSequentialLotConsumption,
+  type LotMovementInput,
+} from "@/lib/kit-lot-balance";
 
 // Schemas de validación Zod
 const supplierSchema = z.object({
@@ -17,13 +22,15 @@ const categorySchema = z.object({
   color: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/, "Color inválido").optional().or(z.literal("")),
 });
 
+// El vencimiento del producto no se guarda en `products`: solo en movimientos de Entrada.
 const productSchema = z.object({
   name: z.string().min(1, "El nombre es requerido"),
   sku: z.string().min(1, "El SKU es requerido"),
-  description: z.string().optional(),
+  description: z
+    .union([z.string(), z.null(), z.undefined()])
+    .transform((v) => (v == null ? "" : v)),
   min_stock: z.number().int().min(0, "El stock mínimo debe ser 0 o mayor"),
   category_id: z.number().int().positive("La categoría es requerida"),
-  expiration_date: z.string().optional().nullable(),
 });
 
 const kitSchema = z.object({
@@ -401,7 +408,6 @@ export async function createProduct(formData: FormData) {
       description: formData.get("description") as string,
       min_stock: Number(formData.get("min_stock")),
       category_id: Number(formData.get("category_id")),
-      expiration_date: formData.get("expiration_date") as string | null,
     };
 
     const validatedData = productSchema.parse(rawData);
@@ -445,13 +451,16 @@ export async function createProduct(formData: FormData) {
     const { data, error } = await supabase
       .from("products")
       .insert({
-        ...validatedData,
+        name: validatedData.name,
+        sku: validatedData.sku,
+        min_stock: validatedData.min_stock,
+        category_id: validatedData.category_id,
         organization_id: profile.organization_id,
         country_code: profile.country_code || "MX",
         current_stock: 0,
         stock: 0,
         description: validatedData.description || null,
-        expiration_date: validatedData.expiration_date || null,
+        expiration_date: null,
       })
       .select()
       .single();
@@ -767,6 +776,466 @@ export async function registerMovement(formData: FormData) {
   }
 }
 
+type MovementType = "Entrada" | "Salida";
+
+function signedMovementQuantity(type: MovementType, quantity: number) {
+  return type === "Entrada" ? quantity : -quantity;
+}
+
+async function applyWarehouseStockDelta(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  warehouseId: string | null,
+  productId: string,
+  delta: number
+) {
+  if (!warehouseId || delta === 0) {
+    return { success: true as const };
+  }
+
+  const { data: wsRow, error: wsError } = await supabase
+    .from("warehouse_stock")
+    .select("id, current_stock")
+    .eq("warehouse_id", warehouseId)
+    .eq("product_id", productId)
+    .maybeSingle();
+
+  if (wsError) {
+    return { error: wsError.message };
+  }
+
+  if (!wsRow) {
+    if (delta < 0) {
+      return {
+        error:
+          "No se puede descontar stock del almacén seleccionado porque ese producto no existe en esa ubicación.",
+      };
+    }
+
+    const { error: insertError } = await supabase.from("warehouse_stock").insert({
+      warehouse_id: warehouseId,
+      product_id: productId,
+      current_stock: delta,
+    });
+
+    if (insertError) {
+      return { error: insertError.message };
+    }
+
+    return { success: true as const };
+  }
+
+  const nextStock = wsRow.current_stock + delta;
+  if (nextStock < 0) {
+    return {
+      error:
+        "No se puede aplicar el cambio porque dejaría stock negativo en el almacén seleccionado.",
+    };
+  }
+
+  const { error: updateError } = await supabase
+    .from("warehouse_stock")
+    .update({
+      current_stock: nextStock,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", wsRow.id);
+
+  if (updateError) {
+    return { error: updateError.message };
+  }
+
+  return { success: true as const };
+}
+
+export async function updateMovement(movementId: string, formData: FormData) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    if (!z.string().uuid().safeParse(movementId).success) {
+      return { error: "ID de movimiento inválido" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const countryCode = profile.country_code || "MX";
+
+    const { data: currentMovement, error: currentMovementError } = await supabase
+      .from("movements")
+      .select(
+        "id, product_id, type, quantity, movement_date, lot_number, expiration_date, supplier_id, recipient, notes, warehouse_id"
+      )
+      .eq("id", movementId)
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode)
+      .single();
+
+    if (currentMovementError || !currentMovement) {
+      return { error: "Movimiento no encontrado" };
+    }
+
+    const rawData = {
+      product_id: formData.get("product_id") as string,
+      type: formData.get("type") as string,
+      quantity: formData.get("quantity") as string,
+      movement_date: formData.get("movement_date") as string,
+      lot_number: formData.get("lot_number") as string | null,
+      expiration_date: formData.get("expiration_date") as string | null,
+      supplier_id: formData.get("supplier_id") as string | null,
+      recipient: formData.get("recipient") as string | null,
+      notes: formData.get("notes") as string | null,
+      warehouse_id: (formData.get("warehouse_id") as string) || "",
+    };
+
+    const validatedData = movementSchema.parse({
+      product_id: rawData.product_id || "",
+      type: rawData.type || "",
+      quantity: rawData.quantity || "0",
+      movement_date:
+        rawData.movement_date || new Date().toISOString().split("T")[0],
+      lot_number: rawData.lot_number || null,
+      expiration_date: rawData.expiration_date || null,
+      supplier_id: rawData.supplier_id || null,
+      recipient: rawData.recipient || null,
+      notes: rawData.notes || null,
+      warehouse_id: rawData.warehouse_id || "",
+    });
+
+    const { data: newProduct, error: newProductError } = await supabase
+      .from("products")
+      .select("id, current_stock, country_code")
+      .eq("id", validatedData.product_id)
+      .eq("organization_id", profile.organization_id)
+      .single();
+
+    if (newProductError || !newProduct) {
+      return { error: "Producto no encontrado" };
+    }
+
+    if (newProduct.country_code !== countryCode) {
+      return { error: "No puedes usar un producto de otro país" };
+    }
+
+    const { data: oldProduct, error: oldProductError } = await supabase
+      .from("products")
+      .select("id, current_stock, country_code")
+      .eq("id", currentMovement.product_id)
+      .eq("organization_id", profile.organization_id)
+      .single();
+
+    if (oldProductError || !oldProduct) {
+      return { error: "Producto original no encontrado" };
+    }
+
+    if (validatedData.supplier_id) {
+      const { data: supplier, error: supplierError } = await supabase
+        .from("suppliers")
+        .select("id, country_code")
+        .eq("id", validatedData.supplier_id)
+        .eq("organization_id", profile.organization_id)
+        .single();
+
+      if (supplierError || !supplier) {
+        return { error: "Proveedor no encontrado" };
+      }
+
+      if (supplier.country_code !== countryCode) {
+        return { error: "No puedes usar un proveedor de otro país" };
+      }
+    }
+
+    if (validatedData.warehouse_id) {
+      const { data: wh, error: whError } = await supabase
+        .from("warehouses")
+        .select("id, country_code")
+        .eq("id", validatedData.warehouse_id)
+        .eq("organization_id", profile.organization_id)
+        .single();
+
+      if (whError || !wh) {
+        return { error: "Almacén no encontrado" };
+      }
+
+      if (wh.country_code !== countryCode) {
+        return { error: "No puedes usar un almacén de otro país" };
+      }
+    }
+
+    const oldSigned = signedMovementQuantity(
+      currentMovement.type as MovementType,
+      currentMovement.quantity
+    );
+    const newSigned = signedMovementQuantity(
+      validatedData.type as MovementType,
+      validatedData.quantity
+    );
+
+    if (currentMovement.product_id === validatedData.product_id) {
+      const nextStock = oldProduct.current_stock - oldSigned + newSigned;
+      if (nextStock < 0) {
+        return {
+          error:
+            "No se puede editar este movimiento porque dejaría stock global negativo.",
+        };
+      }
+    } else {
+      const nextOldStock = oldProduct.current_stock - oldSigned;
+      if (nextOldStock < 0) {
+        return {
+          error:
+            "No se puede editar este movimiento porque dejaría stock global negativo en el producto original.",
+        };
+      }
+
+      const nextNewStock = newProduct.current_stock + newSigned;
+      if (nextNewStock < 0) {
+        return {
+          error:
+            "No se puede editar este movimiento porque no hay stock suficiente en el producto seleccionado.",
+        };
+      }
+    }
+
+    const oldWarehouseResult = await applyWarehouseStockDelta(
+      supabase,
+      currentMovement.warehouse_id,
+      currentMovement.product_id,
+      -oldSigned
+    );
+    if (oldWarehouseResult.error) {
+      return { error: oldWarehouseResult.error };
+    }
+
+    const newWarehouseResult = await applyWarehouseStockDelta(
+      supabase,
+      validatedData.warehouse_id,
+      validatedData.product_id,
+      newSigned
+    );
+    if (newWarehouseResult.error) {
+      return { error: newWarehouseResult.error };
+    }
+
+    if (currentMovement.product_id === validatedData.product_id) {
+      const nextStock = oldProduct.current_stock - oldSigned + newSigned;
+      const { error: productUpdateError } = await supabase
+        .from("products")
+        .update({
+          current_stock: nextStock,
+          stock: nextStock,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", oldProduct.id);
+
+      if (productUpdateError) {
+        return { error: productUpdateError.message };
+      }
+    } else {
+      const oldNextStock = oldProduct.current_stock - oldSigned;
+      const newNextStock = newProduct.current_stock + newSigned;
+
+      const { error: oldProductUpdateError } = await supabase
+        .from("products")
+        .update({
+          current_stock: oldNextStock,
+          stock: oldNextStock,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", oldProduct.id);
+
+      if (oldProductUpdateError) {
+        return { error: oldProductUpdateError.message };
+      }
+
+      const { error: newProductUpdateError } = await supabase
+        .from("products")
+        .update({
+          current_stock: newNextStock,
+          stock: newNextStock,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", newProduct.id);
+
+      if (newProductUpdateError) {
+        return { error: newProductUpdateError.message };
+      }
+    }
+
+    const { error: movementUpdateError } = await supabase
+      .from("movements")
+      .update({
+        product_id: validatedData.product_id,
+        type: validatedData.type,
+        quantity: validatedData.quantity,
+        movement_date: validatedData.movement_date,
+        lot_number: validatedData.lot_number || null,
+        expiration_date: validatedData.expiration_date || null,
+        supplier_id: validatedData.supplier_id || null,
+        recipient: validatedData.recipient || null,
+        notes: validatedData.notes || null,
+        warehouse_id: validatedData.warehouse_id || null,
+      })
+      .eq("id", currentMovement.id);
+
+    if (movementUpdateError) {
+      return { error: movementUpdateError.message };
+    }
+
+    revalidatePath("/dashboard/inventory");
+    revalidatePath("/dashboard");
+    revalidatePath("/dashboard/history");
+    revalidatePath("/dashboard/reports");
+    revalidatePath("/dashboard/warehouses");
+
+    return {
+      success: true,
+      message: "Movimiento actualizado correctamente",
+    };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const firstError = error.issues?.[0]?.message || "Error de validación";
+      return { error: firstError };
+    }
+    console.error("Error inesperado en updateMovement:", error);
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Error inesperado al actualizar movimiento",
+    };
+  }
+}
+
+export async function deleteMovement(movementId: string) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    if (!z.string().uuid().safeParse(movementId).success) {
+      return { error: "ID de movimiento inválido" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const countryCode = profile.country_code || "MX";
+
+    const { data: movement, error: movementError } = await supabase
+      .from("movements")
+      .select("id, product_id, type, quantity, warehouse_id")
+      .eq("id", movementId)
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode)
+      .single();
+
+    if (movementError || !movement) {
+      return { error: "Movimiento no encontrado" };
+    }
+
+    const { data: product, error: productError } = await supabase
+      .from("products")
+      .select("id, current_stock")
+      .eq("id", movement.product_id)
+      .eq("organization_id", profile.organization_id)
+      .single();
+
+    if (productError || !product) {
+      return { error: "Producto no encontrado" };
+    }
+
+    const signed = signedMovementQuantity(
+      movement.type as MovementType,
+      movement.quantity
+    );
+    const nextProductStock = product.current_stock - signed;
+
+    if (nextProductStock < 0) {
+      return {
+        error:
+          "No se puede eliminar este movimiento porque dejaría stock global negativo.",
+      };
+    }
+
+    const warehouseResult = await applyWarehouseStockDelta(
+      supabase,
+      movement.warehouse_id,
+      movement.product_id,
+      -signed
+    );
+    if (warehouseResult.error) {
+      return { error: warehouseResult.error };
+    }
+
+    const { error: productUpdateError } = await supabase
+      .from("products")
+      .update({
+        current_stock: nextProductStock,
+        stock: nextProductStock,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", product.id);
+
+    if (productUpdateError) {
+      return { error: productUpdateError.message };
+    }
+
+    const { error: deleteError } = await supabase
+      .from("movements")
+      .delete()
+      .eq("id", movement.id);
+
+    if (deleteError) {
+      return { error: deleteError.message };
+    }
+
+    revalidatePath("/dashboard/inventory");
+    revalidatePath("/dashboard");
+    revalidatePath("/dashboard/history");
+    revalidatePath("/dashboard/reports");
+    revalidatePath("/dashboard/warehouses");
+
+    return {
+      success: true,
+      message: "Movimiento eliminado correctamente",
+    };
+  } catch (error) {
+    console.error("Error inesperado en deleteMovement:", error);
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Error inesperado al eliminar movimiento",
+    };
+  }
+}
+
 export async function updateProduct(productId: string, formData: FormData) {
   try {
     const supabase = await createClient();
@@ -800,7 +1269,6 @@ export async function updateProduct(productId: string, formData: FormData) {
       description: formData.get("description") as string,
       min_stock: Number(formData.get("min_stock")),
       category_id: Number(formData.get("category_id")),
-      expiration_date: formData.get("expiration_date") as string | null,
     };
 
     const validatedData = productSchema.parse(rawData);
@@ -867,7 +1335,7 @@ export async function updateProduct(productId: string, formData: FormData) {
         description: validatedData.description || null,
         min_stock: validatedData.min_stock,
         category_id: validatedData.category_id,
-        expiration_date: validatedData.expiration_date || null,
+        expiration_date: null,
       })
       .eq("id", productId)
       .eq("organization_id", profile.organization_id)
@@ -1372,11 +1840,24 @@ export async function deleteKit(kitId: string) {
   }
 }
 
+const kitExitLineSchema = z.object({
+  kit_product_id: z.string().uuid("ID de línea de kit inválido"),
+  quantity: z.coerce.number().int().positive(),
+  expiration_date: z.union([z.string(), z.null()]).optional(),
+  lot_number: z.union([z.string(), z.null()]).optional(),
+});
+
 export async function registerKitExit(data: {
   kit_id: string;
+  warehouse_id: string;
   recipient?: string;
   notes?: string;
-  warehouse_id?: string | null;
+  lines: {
+    kit_product_id: string;
+    quantity: number;
+    expiration_date?: string | null;
+    lot_number?: string | null;
+  }[];
 }) {
   try {
     const supabase = await createClient();
@@ -1398,21 +1879,40 @@ export async function registerKitExit(data: {
       return { error: "Error al obtener información del usuario" };
     }
 
-    const warehouseId =
-      data.warehouse_id && data.warehouse_id.trim() !== ""
-        ? data.warehouse_id
-        : null;
+    const countryCode = profile.country_code || "MX";
 
-    if (warehouseId && !z.string().uuid().safeParse(warehouseId).success) {
-      return { error: "ID de almacén inválido" };
+    if (!data.warehouse_id?.trim() || !z.string().uuid().safeParse(data.warehouse_id).success) {
+      return { error: "Debés seleccionar un almacén válido" };
     }
+
+    const warehouseId = data.warehouse_id.trim();
+
+    const linesParse = z.array(kitExitLineSchema).safeParse(data.lines);
+    if (!linesParse.success) {
+      return { error: linesParse.error.issues[0]?.message || "Líneas de kit inválidas" };
+    }
+
+    const normalizedLines = linesParse.data.map((l) => ({
+      kit_product_id: l.kit_product_id,
+      quantity: l.quantity,
+      expiration_date:
+        l.expiration_date == null || l.expiration_date === ""
+          ? null
+          : l.expiration_date.length >= 10
+            ? l.expiration_date.slice(0, 10)
+            : l.expiration_date,
+      lot_number:
+        l.lot_number == null || String(l.lot_number).trim() === ""
+          ? null
+          : String(l.lot_number).trim(),
+    }));
 
     const { data: kit, error: kitError } = await supabase
       .from("kits")
       .select("id, name")
       .eq("id", data.kit_id)
       .eq("organization_id", profile.organization_id)
-      .eq("country_code", profile.country_code || "MX")
+      .eq("country_code", countryCode)
       .single();
 
     if (kitError || !kit) {
@@ -1421,14 +1921,38 @@ export async function registerKitExit(data: {
 
     const { data: kitProducts, error: kitProductsError } = await supabase
       .from("kit_products")
-      .select("product_id, quantity")
+      .select("id, product_id, quantity")
       .eq("kit_id", data.kit_id);
 
     if (kitProductsError || !kitProducts || kitProducts.length === 0) {
       return { error: "El kit no tiene productos asociados" };
     }
 
-    const productIds = kitProducts.map((kp) => kp.product_id);
+    if (normalizedLines.length !== kitProducts.length) {
+      return { error: "Faltan líneas de selección de lote para el kit" };
+    }
+
+    const kpById = new Map(kitProducts.map((kp) => [kp.id, kp]));
+    const lineIds = new Set(normalizedLines.map((l) => l.kit_product_id));
+    if (lineIds.size !== kitProducts.length) {
+      return { error: "Líneas de kit duplicadas o inválidas" };
+    }
+    for (const id of lineIds) {
+      if (!kpById.has(id)) {
+        return { error: "Línea de kit no pertenece a este kit" };
+      }
+    }
+
+    for (const l of normalizedLines) {
+      const kp = kpById.get(l.kit_product_id)!;
+      if (l.quantity !== kp.quantity) {
+        return {
+          error: `La cantidad debe coincidir con la definición del kit (${kp.quantity} u.).`,
+        };
+      }
+    }
+
+    const productIds = [...new Set(kitProducts.map((kp) => kp.product_id))];
     const { data: products, error: productsError } = await supabase
       .from("products")
       .select("id, name, current_stock, country_code")
@@ -1443,6 +1967,9 @@ export async function registerKitExit(data: {
       if (!product) {
         return { error: `Producto no encontrado en el kit` };
       }
+      if (product.country_code !== countryCode) {
+        return { error: "No puedes usar productos de otro país en el kit" };
+      }
       if (product.current_stock < kp.quantity) {
         return {
           error: `Stock insuficiente para "${product.name}". Stock actual: ${product.current_stock}, necesario: ${kp.quantity}`,
@@ -1450,64 +1977,133 @@ export async function registerKitExit(data: {
       }
     }
 
-    if (warehouseId) {
-      const { data: wh, error: whError } = await supabase
-        .from("warehouses")
-        .select("id, country_code")
-        .eq("id", warehouseId)
-        .eq("organization_id", profile.organization_id)
-        .single();
+    const { data: wh, error: whError } = await supabase
+      .from("warehouses")
+      .select("id, country_code")
+      .eq("id", warehouseId)
+      .eq("organization_id", profile.organization_id)
+      .single();
 
-      if (whError || !wh) {
-        return { error: "Almacén no encontrado" };
+    if (whError || !wh) {
+      return { error: "Almacén no encontrado" };
+    }
+
+    if (wh.country_code !== countryCode) {
+      return { error: "No puedes usar un almacén de otro país" };
+    }
+
+    for (const kp of kitProducts) {
+      const product = products.find((p) => p.id === kp.product_id);
+      const { data: wsRow } = await supabase
+        .from("warehouse_stock")
+        .select("current_stock")
+        .eq("warehouse_id", warehouseId)
+        .eq("product_id", kp.product_id)
+        .maybeSingle();
+
+      if (!wsRow) {
+        return {
+          error: `No se puede registrar la salida del kit: "${product?.name || "Producto"}" no tiene stock en el almacén seleccionado.`,
+        };
       }
 
-      if (wh.country_code !== (profile.country_code || "MX")) {
-        return { error: "No puedes usar un almacén de otro país" };
+      const whStock = wsRow.current_stock ?? 0;
+      if (whStock < kp.quantity) {
+        return {
+          error: `Stock insuficiente en el almacén para "${product?.name}". Disponible: ${whStock}, necesario: ${kp.quantity}`,
+        };
       }
+    }
 
-      for (const kp of kitProducts) {
-        const product = products.find((p) => p.id === kp.product_id);
-        const { data: wsRow } = await supabase
-          .from("warehouse_stock")
-          .select("current_stock")
-          .eq("warehouse_id", warehouseId)
-          .eq("product_id", kp.product_id)
-          .maybeSingle();
+    const { data: movRows, error: movError } = await supabase
+      .from("movements")
+      .select("product_id, type, quantity, expiration_date, lot_number, created_at")
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode)
+      .eq("warehouse_id", warehouseId)
+      .in("product_id", productIds)
+      .order("created_at", { ascending: true });
 
-        if (!wsRow) {
-          return {
-            error: `No se puede registrar la salida del kit: "${product?.name || "Producto"}" no tiene stock en el almacén seleccionado.`,
-          };
-        }
+    if (movError) {
+      return { error: movError.message };
+    }
 
-        const whStock = wsRow?.current_stock ?? 0;
-        if (whStock < kp.quantity) {
-          return {
-            error: `Stock insuficiente en el almacén para "${product?.name}". Disponible: ${whStock}, necesario: ${kp.quantity}`,
-          };
-        }
+    type MovRow = {
+      product_id: string;
+      type: "Entrada" | "Salida";
+      quantity: number;
+      expiration_date: string | null;
+      lot_number: string | null;
+      created_at: string;
+    };
+
+    const movementsList = (movRows || []) as MovRow[];
+
+    const initialByProduct = new Map<string, ReturnType<typeof computeLotBalancesForProduct>>();
+    for (const pid of productIds) {
+      const inputs: LotMovementInput[] = movementsList
+        .filter((m) => m.product_id === pid)
+        .map((m) => ({
+          type: m.type,
+          quantity: m.quantity,
+          expiration_date: m.expiration_date,
+          lot_number: m.lot_number,
+          created_at: m.created_at,
+        }));
+      initialByProduct.set(pid, computeLotBalancesForProduct(inputs));
+    }
+
+    const lineByKp = new Map(normalizedLines.map((l) => [l.kit_product_id, l]));
+    const orderedForValidation = kitProducts.map((kp) => {
+      const l = lineByKp.get(kp.id);
+      if (!l) {
+        return null;
       }
+      return {
+        productId: kp.product_id,
+        quantity: l.quantity,
+        expirationDate: l.expiration_date,
+        lotNumber: l.lot_number,
+      };
+    });
+    if (orderedForValidation.some((x) => x === null)) {
+      return { error: "Datos de líneas de kit incompletos" };
+    }
+
+    const lotCheck = validateSequentialLotConsumption(
+      initialByProduct,
+      orderedForValidation as {
+        productId: string;
+        quantity: number;
+        expirationDate: string | null;
+        lotNumber: string | null;
+      }[]
+    );
+    if (!lotCheck.ok) {
+      return { error: lotCheck.error };
     }
 
     const kitExitNote = `Salida por Kit: ${kit.name}${data.notes ? ` - ${data.notes}` : ""}`;
 
     const today = new Date().toISOString().split("T")[0];
-    const movements = kitProducts.map((kp) => ({
-      product_id: kp.product_id,
-      type: "Salida" as const,
-      quantity: kp.quantity,
-      movement_date: today,
-      organization_id: profile.organization_id,
-      country_code: profile.country_code || "MX",
-      created_by: user.id,
-      recipient: data.recipient || null,
-      notes: kitExitNote,
-      lot_number: null,
-      expiration_date: null,
-      supplier_id: null,
-      warehouse_id: warehouseId,
-    }));
+    const movements = kitProducts.map((kp) => {
+      const l = lineByKp.get(kp.id)!;
+      return {
+        product_id: kp.product_id,
+        type: "Salida" as const,
+        quantity: kp.quantity,
+        movement_date: today,
+        organization_id: profile.organization_id,
+        country_code: countryCode,
+        created_by: user.id,
+        recipient: data.recipient || null,
+        notes: kitExitNote,
+        lot_number: l.lot_number,
+        expiration_date: l.expiration_date,
+        supplier_id: null,
+        warehouse_id: warehouseId,
+      };
+    });
 
     const { error: movementsError } = await supabase
       .from("movements")

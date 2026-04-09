@@ -36,6 +36,8 @@ import type { Product, Category, Kit, KitProduct } from "@/types/database";
 type ProductWithCategory = Product & {
   category?: Category;
   warehouseBreakdown?: { name: string; quantity: number }[];
+  /** Próximo vencimiento según entradas con fecha (no usa `products.expiration_date`). */
+  nearestEntryExpiration?: string | null;
 };
 
 type KitWithProducts = Kit & {
@@ -134,10 +136,32 @@ export default function InventoryPage() {
 
     const categoriesList = categoriesData || [];
     const pids = (productsData || []).map((p: Product) => p.id);
+    const nearestEntryExpirationByProduct: Record<string, string> = {};
     const breakdownByProduct: Record<string, { name: string; quantity: number }[]> =
       {};
 
     if (pids.length > 0) {
+      const { data: entradaExpRows } = await supabase
+        .from("movements")
+        .select("product_id, expiration_date")
+        .eq("organization_id", profile.organization_id)
+        .eq("country_code", countryCode)
+        .eq("type", "Entrada")
+        .not("expiration_date", "is", null)
+        .in("product_id", pids);
+
+      for (const row of entradaExpRows || []) {
+        if (!row.expiration_date) continue;
+        const d =
+          row.expiration_date.length >= 10
+            ? row.expiration_date.slice(0, 10)
+            : row.expiration_date;
+        const prev = nearestEntryExpirationByProduct[row.product_id];
+        if (!prev || d < prev) {
+          nearestEntryExpirationByProduct[row.product_id] = d;
+        }
+      }
+
       const { data: wsRows } = await supabase
         .from("warehouse_stock")
         .select("product_id, warehouse_id, current_stock")
@@ -173,6 +197,7 @@ export default function InventoryPage() {
         ...p,
         category,
         warehouseBreakdown: breakdownByProduct[p.id] || [],
+        nearestEntryExpiration: nearestEntryExpirationByProduct[p.id] ?? null,
       };
     });
 
@@ -608,7 +633,7 @@ export default function InventoryPage() {
         <div className="grid grid-cols-1 gap-2">
           {filteredProducts.map((product, index) => {
             const stockStatus = getStockStatus(product);
-            const expStatus = getExpirationStatus(product.expiration_date);
+            const expStatus = getExpirationStatus(product.nearestEntryExpiration ?? null);
             return (
               <motion.div
                 key={product.id}

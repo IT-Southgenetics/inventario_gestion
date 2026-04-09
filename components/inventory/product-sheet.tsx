@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Package, Hash, FileText, AlertCircle, Plus, Palette, Calendar } from "lucide-react";
+import { Package, Hash, FileText, AlertCircle, Plus, Palette } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -60,7 +60,6 @@ export function ProductSheet({
   const [description, setDescription] = useState("");
   const [minStock, setMinStock] = useState("0");
   const [categoryId, setCategoryId] = useState("");
-  const [expirationDate, setExpirationDate] = useState("");
 
   useEffect(() => {
     if (open) {
@@ -71,7 +70,6 @@ export function ProductSheet({
         setDescription(product.description || "");
         setMinStock(product.min_stock.toString());
         setCategoryId(product.category_id.toString());
-        setExpirationDate(product.expiration_date || "");
       } else {
         resetForm(); // Resetear el formulario si es nuevo producto
       }
@@ -120,7 +118,6 @@ export function ProductSheet({
     setDescription("");
     setMinStock("0");
     setCategoryId("");
-    setExpirationDate("");
     setIsSubmitting(false);
   }
 
@@ -161,10 +158,9 @@ export function ProductSheet({
     const formData = new FormData();
     formData.append("name", name);
     formData.append("sku", sku);
-    if (description) formData.append("description", description);
+    formData.append("description", description);
     formData.append("min_stock", minStock);
     formData.append("category_id", categoryId);
-    if (expirationDate) formData.append("expiration_date", expirationDate);
 
     const result = product
       ? await updateProduct(product.id, formData)
@@ -303,13 +299,14 @@ export function ProductSheet({
 
             {/* Stock Mínimo */}
             <div className="space-y-2">
-              <Label htmlFor="min_stock" className="text-white">Stock Mínimo</Label>
+              <Label htmlFor="min_stock" className="text-white">Stock Mínimo *</Label>
               <Input
                 id="min_stock"
                 type="number"
                 min="0"
                 value={minStock}
                 onChange={(e) => setMinStock(e.target.value)}
+                required
                 disabled={isSubmitting}
                 className="h-12 bg-white/95 border-white/20 focus:bg-white focus:border-white/40 text-slate-900 placeholder:text-slate-400"
                 placeholder="0"
@@ -317,25 +314,6 @@ export function ProductSheet({
               <p className="text-xs text-teal-50/80">
                 Se mostrará una alerta cuando el stock esté por debajo de este
                 valor
-              </p>
-            </div>
-
-            {/* Fecha de Vencimiento */}
-            <div className="space-y-2">
-              <Label htmlFor="expiration_date" className="text-white">Fecha de Vencimiento</Label>
-              <div className="relative">
-                <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-teal-300" />
-                <Input
-                  id="expiration_date"
-                  type="date"
-                  value={expirationDate}
-                  onChange={(e) => setExpirationDate(e.target.value)}
-                  disabled={isSubmitting}
-                  className="pl-10 h-12 bg-white/95 border-white/20 focus:bg-white focus:border-white/40 text-slate-900 placeholder:text-slate-400"
-                />
-              </div>
-              <p className="text-xs text-teal-50/80">
-                Fecha de caducidad del producto (opcional)
               </p>
             </div>
 
@@ -374,6 +352,7 @@ export function ProductSheet({
                   !name ||
                   !sku ||
                   !categoryId ||
+                  minStock === "" ||
                   categories.length === 0
                 }
               >

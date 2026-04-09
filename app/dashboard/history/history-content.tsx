@@ -13,6 +13,7 @@ import {
   Calendar,
   X,
   Pencil,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,10 +43,10 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/client";
-import { updateMovementWarehouse } from "@/actions/inventory";
+import { updateMovement, deleteMovement } from "@/actions/inventory";
 import toast from "react-hot-toast";
 import Link from "next/link";
-import type { Movement, Product, Profile, Warehouse } from "@/types/database";
+import type { Movement, Product, Profile, Warehouse, Supplier } from "@/types/database";
 
 type MovementWithDetails = Movement & {
   products: Product | null;
@@ -64,9 +65,23 @@ export function HistoryContent() {
   const [typeFilter, setTypeFilter] = useState<"all" | "Entrada" | "Salida">("all");
   const [selectedProduct, setSelectedProduct] = useState<{ id: string; name: string; sku: string } | null>(null);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [editMovement, setEditMovement] = useState<MovementWithDetails | null>(null);
-  const [editWarehouseId, setEditWarehouseId] = useState<string>("__none__");
-  const [isSavingWarehouse, setIsSavingWarehouse] = useState(false);
+  const [isSavingMovement, setIsSavingMovement] = useState(false);
+  const [isDeletingMovement, setIsDeletingMovement] = useState(false);
+  const [editForm, setEditForm] = useState({
+    product_id: "",
+    type: "Entrada" as "Entrada" | "Salida",
+    quantity: "",
+    movement_date: "",
+    lot_number: "",
+    expiration_date: "",
+    supplier_id: "__none__",
+    recipient: "",
+    notes: "",
+    warehouse_id: "__none__",
+  });
 
   useEffect(() => {
     loadMovements();
@@ -129,15 +144,16 @@ export function HistoryContent() {
       return;
     }
 
-    // Obtener IDs únicos para hacer queries eficientes
-    const productIds = [...new Set(movementsData.map((m) => m.product_id))];
+    // Obtener IDs únicos para mapear detalles de los movimientos
+    const movementProductIds = [...new Set(movementsData.map((m) => m.product_id))];
     const userIds = [...new Set(movementsData.map((m) => m.created_by).filter(Boolean))];
-    const supplierIds = [...new Set(movementsData.map((m) => m.supplier_id).filter(Boolean))];
-    // Cargar productos
+    // Cargar catálogo completo para edición
     const { data: productsData } = await supabase
       .from("products")
-      .select("id, name, sku")
-      .in("id", productIds);
+      .select("*")
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode)
+      .order("name", { ascending: true });
 
     // Si hay un producto específico, guardarlo para mostrar en el header
     if (productIdParam) {
@@ -154,12 +170,12 @@ export function HistoryContent() {
       : { data: [] };
 
     // Cargar proveedores
-    const { data: suppliersData } = supplierIds.length > 0
-      ? await supabase
-          .from("suppliers")
-          .select("id, name")
-          .in("id", supplierIds)
-      : { data: [] };
+    const { data: suppliersData } = await supabase
+      .from("suppliers")
+      .select("*")
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode)
+      .order("name", { ascending: true });
 
     const { data: warehousesData } = await supabase
       .from("warehouses")
@@ -171,7 +187,10 @@ export function HistoryContent() {
     // Mapear datos
     const movementsWithDetails = movementsData.map((movement) => ({
       ...movement,
-      products: productsData?.find((p) => p.id === movement.product_id) || null,
+      products:
+        productsData?.find(
+          (p) => p.id === movement.product_id && movementProductIds.includes(p.id)
+        ) || null,
       profiles: profilesData?.find((p) => p.id === movement.created_by) || null,
       suppliers: suppliersData?.find((s) => s.id === movement.supplier_id) || null,
       warehouseName: movement.warehouse_id
@@ -179,6 +198,8 @@ export function HistoryContent() {
         : null,
     }));
 
+    setProducts(productsData || []);
+    setSuppliers(suppliersData || []);
     setWarehouses(warehousesData || []);
     setMovements(movementsWithDetails);
     setIsLoading(false);
@@ -218,29 +239,67 @@ export function HistoryContent() {
     });
   };
 
-  const openEditWarehouseDialog = (movement: MovementWithDetails) => {
+  const openEditMovementDialog = (movement: MovementWithDetails) => {
     setEditMovement(movement);
-    setEditWarehouseId(movement.warehouse_id || "__none__");
+    setEditForm({
+      product_id: movement.product_id,
+      type: movement.type,
+      quantity: movement.quantity.toString(),
+      movement_date: movement.movement_date || new Date().toISOString().split("T")[0],
+      lot_number: movement.lot_number || "",
+      expiration_date: movement.expiration_date || "",
+      supplier_id: movement.supplier_id || "__none__",
+      recipient: movement.recipient || "",
+      notes: movement.notes || "",
+      warehouse_id: movement.warehouse_id || "__none__",
+    });
   };
 
-  const handleSaveWarehouse = async () => {
+  const handleSaveMovement = async () => {
     if (!editMovement) return;
-    setIsSavingWarehouse(true);
+    setIsSavingMovement(true);
 
-    const result = await updateMovementWarehouse(
-      editMovement.id,
-      editWarehouseId === "__none__" ? null : editWarehouseId
-    );
+    const formData = new FormData();
+    formData.append("product_id", editForm.product_id);
+    formData.append("type", editForm.type);
+    formData.append("quantity", editForm.quantity);
+    formData.append("movement_date", editForm.movement_date);
+    if (editForm.lot_number) formData.append("lot_number", editForm.lot_number);
+    if (editForm.expiration_date) formData.append("expiration_date", editForm.expiration_date);
+    if (editForm.supplier_id !== "__none__") formData.append("supplier_id", editForm.supplier_id);
+    if (editForm.recipient) formData.append("recipient", editForm.recipient);
+    if (editForm.notes) formData.append("notes", editForm.notes);
+    if (editForm.warehouse_id !== "__none__") formData.append("warehouse_id", editForm.warehouse_id);
+
+    const result = await updateMovement(editMovement.id, formData);
 
     if (result?.error) {
       toast.error(result.error);
-      setIsSavingWarehouse(false);
+      setIsSavingMovement(false);
       return;
     }
 
     toast.success(result?.message || "Movimiento actualizado");
     setEditMovement(null);
-    setIsSavingWarehouse(false);
+    setIsSavingMovement(false);
+    await loadMovements();
+  };
+
+  const handleDeleteMovement = async () => {
+    if (!editMovement) return;
+    setIsDeletingMovement(true);
+
+    const result = await deleteMovement(editMovement.id);
+
+    if (result?.error) {
+      toast.error(result.error);
+      setIsDeletingMovement(false);
+      return;
+    }
+
+    toast.success(result?.message || "Movimiento eliminado");
+    setEditMovement(null);
+    setIsDeletingMovement(false);
     await loadMovements();
   };
 
@@ -445,7 +504,7 @@ export function HistoryContent() {
                                 type="button"
                                 size="sm"
                                 variant="outline"
-                                onClick={() => openEditWarehouseDialog(movement)}
+                                onClick={() => openEditMovementDialog(movement)}
                               >
                                 <Pencil className="h-3.5 w-3.5 mr-1" />
                                 Editar
@@ -568,10 +627,10 @@ export function HistoryContent() {
                             type="button"
                             size="sm"
                             variant="outline"
-                            onClick={() => openEditWarehouseDialog(movement)}
+                            onClick={() => openEditMovementDialog(movement)}
                           >
                             <Pencil className="h-3.5 w-3.5 mr-1" />
-                            Editar almacén
+                            Editar
                           </Button>
                         </div>
                       </div>
@@ -590,38 +649,91 @@ export function HistoryContent() {
           if (!open) setEditMovement(null);
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Editar almacén del movimiento</DialogTitle>
+            <DialogTitle>Editar movimiento</DialogTitle>
             <DialogDescription>
-              Corrige el almacén asignado para mantener el historial y el stock por ubicación consistentes.
+              Puedes modificar todos los datos del movimiento o eliminarlo.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
-            <div className="text-sm text-slate-600">
-              <p>
-                <span className="font-medium text-slate-800">Producto:</span>{" "}
-                {editMovement?.products?.name || "Producto eliminado"}
-              </p>
-              <p>
-                <span className="font-medium text-slate-800">Movimiento:</span>{" "}
-                {editMovement?.type} ({editMovement?.quantity})
-              </p>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Producto</label>
+              <Select
+                value={editForm.product_id}
+                onValueChange={(value) => setEditForm((prev) => ({ ...prev, product_id: value }))}
+                disabled={isSavingMovement || isDeletingMovement}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar producto" />
+                </SelectTrigger>
+                <SelectContent>
+                  {products.map((product) => (
+                    <SelectItem key={product.id} value={product.id}>
+                      {product.name} ({product.sku})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Tipo</label>
+              <Select
+                value={editForm.type}
+                onValueChange={(value: "Entrada" | "Salida") =>
+                  setEditForm((prev) => ({ ...prev, type: value }))
+                }
+                disabled={isSavingMovement || isDeletingMovement}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar tipo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Entrada">Entrada</SelectItem>
+                  <SelectItem value="Salida">Salida</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Cantidad</label>
+              <Input
+                type="number"
+                min="1"
+                value={editForm.quantity}
+                onChange={(e) => setEditForm((prev) => ({ ...prev, quantity: e.target.value }))}
+                disabled={isSavingMovement || isDeletingMovement}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Fecha del movimiento</label>
+              <Input
+                type="date"
+                value={editForm.movement_date}
+                onChange={(e) =>
+                  setEditForm((prev) => ({ ...prev, movement_date: e.target.value }))
+                }
+                disabled={isSavingMovement || isDeletingMovement}
+              />
             </div>
 
             <div className="space-y-2">
               <label className="text-sm font-medium text-slate-700">Almacén</label>
               <Select
-                value={editWarehouseId}
-                onValueChange={setEditWarehouseId}
-                disabled={isSavingWarehouse}
+                value={editForm.warehouse_id}
+                onValueChange={(value) =>
+                  setEditForm((prev) => ({ ...prev, warehouse_id: value }))
+                }
+                disabled={isSavingMovement || isDeletingMovement}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Seleccionar almacén" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__none__">Sin almacén (solo stock global)</SelectItem>
+                  <SelectItem value="__none__">Sin almacén (solo global)</SelectItem>
                   {warehouses.map((warehouse) => (
                     <SelectItem key={warehouse.id} value={warehouse.id}>
                       {warehouse.name}
@@ -630,21 +742,122 @@ export function HistoryContent() {
                 </SelectContent>
               </Select>
             </div>
+
+            {editForm.type === "Entrada" && (
+              <>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">Proveedor</label>
+                  <Select
+                    value={editForm.supplier_id}
+                    onValueChange={(value) =>
+                      setEditForm((prev) => ({ ...prev, supplier_id: value }))
+                    }
+                    disabled={isSavingMovement || isDeletingMovement}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleccionar proveedor" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">Sin proveedor</SelectItem>
+                      {suppliers.map((supplier) => (
+                        <SelectItem key={supplier.id} value={supplier.id}>
+                          {supplier.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">Lote</label>
+                  <Input
+                    value={editForm.lot_number}
+                    onChange={(e) =>
+                      setEditForm((prev) => ({ ...prev, lot_number: e.target.value }))
+                    }
+                    disabled={isSavingMovement || isDeletingMovement}
+                    placeholder="Ej: LOT-2026-001"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">Vencimiento</label>
+                  <Input
+                    type="date"
+                    value={editForm.expiration_date}
+                    onChange={(e) =>
+                      setEditForm((prev) => ({ ...prev, expiration_date: e.target.value }))
+                    }
+                    disabled={isSavingMovement || isDeletingMovement}
+                  />
+                </div>
+              </>
+            )}
+
+            {editForm.type === "Salida" && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-700">
+                  Destinatario / Razón
+                </label>
+                <Input
+                  value={editForm.recipient}
+                  onChange={(e) =>
+                    setEditForm((prev) => ({ ...prev, recipient: e.target.value }))
+                  }
+                  disabled={isSavingMovement || isDeletingMovement}
+                  placeholder="Ej: Clínica XYZ, Dr. Pérez"
+                />
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Notas</label>
+              <Input
+                value={editForm.notes}
+                onChange={(e) => setEditForm((prev) => ({ ...prev, notes: e.target.value }))}
+                disabled={isSavingMovement || isDeletingMovement}
+                placeholder="Observaciones"
+              />
+            </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="justify-between gap-2">
             <Button
               type="button"
-              variant="outline"
-              onClick={() => setEditMovement(null)}
-              disabled={isSavingWarehouse}
+              variant="destructive"
+              onClick={handleDeleteMovement}
+              disabled={isSavingMovement || isDeletingMovement}
             >
-              Cancelar
+              <Trash2 className="h-4 w-4 mr-1" />
+              {isDeletingMovement ? "Eliminando..." : "Eliminar"}
             </Button>
-            <Button type="button" onClick={handleSaveWarehouse} disabled={isSavingWarehouse}>
-              {isSavingWarehouse ? "Guardando..." : "Guardar cambios"}
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setEditMovement(null)}
+                disabled={isSavingMovement || isDeletingMovement}
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                onClick={handleSaveMovement}
+                disabled={
+                  isSavingMovement ||
+                  isDeletingMovement ||
+                  !editForm.product_id ||
+                  !editForm.quantity ||
+                  !editForm.movement_date
+                }
+              >
+                {isSavingMovement ? "Guardando..." : "Guardar cambios"}
+              </Button>
+            </div>
           </DialogFooter>
+          <p className="text-xs text-slate-500">
+            Eliminar o editar un movimiento recalcula el stock global y por almacén.
+          </p>
         </DialogContent>
       </Dialog>
     </div>
