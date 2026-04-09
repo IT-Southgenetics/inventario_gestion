@@ -626,6 +626,13 @@ export async function registerMovement(formData: FormData) {
           .eq("product_id", validatedData.product_id)
           .maybeSingle();
 
+        if (!wsRow) {
+          return {
+            error:
+              "No se puede registrar la salida: el producto no tiene stock en el almacén seleccionado.",
+          };
+        }
+
         const whStock = wsRow?.current_stock ?? 0;
         if (whStock < validatedData.quantity) {
           return {
@@ -1468,6 +1475,12 @@ export async function registerKitExit(data: {
           .eq("product_id", kp.product_id)
           .maybeSingle();
 
+        if (!wsRow) {
+          return {
+            error: `No se puede registrar la salida del kit: "${product?.name || "Producto"}" no tiene stock en el almacén seleccionado.`,
+          };
+        }
+
         const whStock = wsRow?.current_stock ?? 0;
         if (whStock < kp.quantity) {
           return {
@@ -1564,6 +1577,189 @@ export async function registerKitExit(data: {
     console.error("Error inesperado en registerKitExit:", error);
     return {
       error: error instanceof Error ? error.message : "Error inesperado al registrar salida del kit",
+    };
+  }
+}
+
+export async function updateMovementWarehouse(
+  movementId: string,
+  warehouseId: string | null
+) {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return { error: "No autenticado" };
+    }
+
+    if (!z.string().uuid().safeParse(movementId).success) {
+      return { error: "ID de movimiento inválido" };
+    }
+
+    if (warehouseId && !z.string().uuid().safeParse(warehouseId).success) {
+      return { error: "ID de almacén inválido" };
+    }
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("organization_id, country_code")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      return { error: "Error al obtener información del usuario" };
+    }
+
+    const countryCode = profile.country_code || "MX";
+
+    const { data: movement, error: movementError } = await supabase
+      .from("movements")
+      .select("id, product_id, type, quantity, warehouse_id")
+      .eq("id", movementId)
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode)
+      .single();
+
+    if (movementError || !movement) {
+      return { error: "Movimiento no encontrado" };
+    }
+
+    if (movement.warehouse_id === warehouseId) {
+      return {
+        success: true,
+        message: "No hubo cambios en el almacén",
+      };
+    }
+
+    if (warehouseId) {
+      const { data: warehouse, error: warehouseError } = await supabase
+        .from("warehouses")
+        .select("id, country_code")
+        .eq("id", warehouseId)
+        .eq("organization_id", profile.organization_id)
+        .single();
+
+      if (warehouseError || !warehouse) {
+        return { error: "Almacén no encontrado" };
+      }
+
+      if (warehouse.country_code !== countryCode) {
+        return { error: "No puedes usar un almacén de otro país" };
+      }
+    }
+
+    const stockDelta =
+      movement.type === "Entrada" ? movement.quantity : -movement.quantity;
+
+    if (movement.warehouse_id) {
+      const { data: oldStockRow } = await supabase
+        .from("warehouse_stock")
+        .select("id, current_stock")
+        .eq("warehouse_id", movement.warehouse_id)
+        .eq("product_id", movement.product_id)
+        .maybeSingle();
+
+      if (oldStockRow) {
+        const nextStock = oldStockRow.current_stock - stockDelta;
+        if (nextStock < 0) {
+          return {
+            error:
+              "No se puede editar este movimiento porque dejaría stock negativo en el almacén actual.",
+          };
+        }
+
+        const { error: oldUpdateError } = await supabase
+          .from("warehouse_stock")
+          .update({
+            current_stock: nextStock,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", oldStockRow.id);
+
+        if (oldUpdateError) {
+          return { error: oldUpdateError.message };
+        }
+      }
+    }
+
+    if (warehouseId) {
+      const { data: newStockRow } = await supabase
+        .from("warehouse_stock")
+        .select("id, current_stock")
+        .eq("warehouse_id", warehouseId)
+        .eq("product_id", movement.product_id)
+        .maybeSingle();
+
+      if (newStockRow) {
+        const nextStock = newStockRow.current_stock + stockDelta;
+        if (nextStock < 0) {
+          return {
+            error:
+              "No se puede asignar este movimiento al almacén seleccionado: stock insuficiente en esa ubicación.",
+          };
+        }
+
+        const { error: newUpdateError } = await supabase
+          .from("warehouse_stock")
+          .update({
+            current_stock: nextStock,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", newStockRow.id);
+
+        if (newUpdateError) {
+          return { error: newUpdateError.message };
+        }
+      } else {
+        if (stockDelta < 0) {
+          return {
+            error:
+              "No se puede asignar una salida a un almacén que no tiene stock previo de este producto.",
+          };
+        }
+
+        const { error: insertError } = await supabase.from("warehouse_stock").insert({
+          warehouse_id: warehouseId,
+          product_id: movement.product_id,
+          current_stock: stockDelta,
+        });
+
+        if (insertError) {
+          return { error: insertError.message };
+        }
+      }
+    }
+
+    const { error: updateMovementError } = await supabase
+      .from("movements")
+      .update({
+        warehouse_id: warehouseId,
+      })
+      .eq("id", movement.id);
+
+    if (updateMovementError) {
+      return { error: updateMovementError.message };
+    }
+
+    revalidatePath("/dashboard/history");
+    revalidatePath("/dashboard/inventory");
+    revalidatePath("/dashboard/reports");
+    revalidatePath("/dashboard/warehouses");
+
+    return {
+      success: true,
+      message: "Almacén del movimiento actualizado correctamente",
+    };
+  } catch (error) {
+    console.error("Error inesperado en updateMovementWarehouse:", error);
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Error inesperado al actualizar el almacén del movimiento",
     };
   }
 }

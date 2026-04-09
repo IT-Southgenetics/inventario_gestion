@@ -12,6 +12,7 @@ import {
   User,
   Calendar,
   X,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,6 +24,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Table,
   TableBody,
   TableCell,
@@ -33,9 +42,10 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/client";
+import { updateMovementWarehouse } from "@/actions/inventory";
 import toast from "react-hot-toast";
 import Link from "next/link";
-import type { Movement, Product, Profile } from "@/types/database";
+import type { Movement, Product, Profile, Warehouse } from "@/types/database";
 
 type MovementWithDetails = Movement & {
   products: Product | null;
@@ -53,6 +63,10 @@ export function HistoryContent() {
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "Entrada" | "Salida">("all");
   const [selectedProduct, setSelectedProduct] = useState<{ id: string; name: string; sku: string } | null>(null);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [editMovement, setEditMovement] = useState<MovementWithDetails | null>(null);
+  const [editWarehouseId, setEditWarehouseId] = useState<string>("__none__");
+  const [isSavingWarehouse, setIsSavingWarehouse] = useState(false);
 
   useEffect(() => {
     loadMovements();
@@ -119,14 +133,6 @@ export function HistoryContent() {
     const productIds = [...new Set(movementsData.map((m) => m.product_id))];
     const userIds = [...new Set(movementsData.map((m) => m.created_by).filter(Boolean))];
     const supplierIds = [...new Set(movementsData.map((m) => m.supplier_id).filter(Boolean))];
-    const warehouseIds = [
-      ...new Set(
-        movementsData
-          .map((m) => m.warehouse_id)
-          .filter((id): id is string => Boolean(id))
-      ),
-    ];
-
     // Cargar productos
     const { data: productsData } = await supabase
       .from("products")
@@ -155,12 +161,12 @@ export function HistoryContent() {
           .in("id", supplierIds)
       : { data: [] };
 
-    const { data: warehousesData } = warehouseIds.length > 0
-      ? await supabase
-          .from("warehouses")
-          .select("id, name")
-          .in("id", warehouseIds)
-      : { data: [] };
+    const { data: warehousesData } = await supabase
+      .from("warehouses")
+      .select("id, name, description, organization_id, country_code, created_at, updated_at")
+      .eq("organization_id", profile.organization_id)
+      .eq("country_code", countryCode)
+      .order("name", { ascending: true });
 
     // Mapear datos
     const movementsWithDetails = movementsData.map((movement) => ({
@@ -173,6 +179,7 @@ export function HistoryContent() {
         : null,
     }));
 
+    setWarehouses(warehousesData || []);
     setMovements(movementsWithDetails);
     setIsLoading(false);
   }
@@ -209,6 +216,32 @@ export function HistoryContent() {
       month: "short",
       year: "numeric",
     });
+  };
+
+  const openEditWarehouseDialog = (movement: MovementWithDetails) => {
+    setEditMovement(movement);
+    setEditWarehouseId(movement.warehouse_id || "__none__");
+  };
+
+  const handleSaveWarehouse = async () => {
+    if (!editMovement) return;
+    setIsSavingWarehouse(true);
+
+    const result = await updateMovementWarehouse(
+      editMovement.id,
+      editWarehouseId === "__none__" ? null : editWarehouseId
+    );
+
+    if (result?.error) {
+      toast.error(result.error);
+      setIsSavingWarehouse(false);
+      return;
+    }
+
+    toast.success(result?.message || "Movimiento actualizado");
+    setEditMovement(null);
+    setIsSavingWarehouse(false);
+    await loadMovements();
   };
 
   return (
@@ -313,6 +346,7 @@ export function HistoryContent() {
                         <TableHead>Detalle/Traza</TableHead>
                         <TableHead>Usuario</TableHead>
                         <TableHead>Registrado</TableHead>
+                        <TableHead className="text-right">Acciones</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -405,6 +439,17 @@ export function HistoryContent() {
                             </TableCell>
                             <TableCell className="text-xs text-slate-400">
                               {formatDate(movement.created_at)}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openEditWarehouseDialog(movement)}
+                              >
+                                <Pencil className="h-3.5 w-3.5 mr-1" />
+                                Editar
+                              </Button>
                             </TableCell>
                           </TableRow>
                         );
@@ -518,6 +563,17 @@ export function HistoryContent() {
                         <div className="text-xs text-slate-500 pt-2 border-t border-slate-200">
                           Por: {movement.profiles?.email?.split("@")[0] || "Sistema"}
                         </div>
+                        <div className="pt-1">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openEditWarehouseDialog(movement)}
+                          >
+                            <Pencil className="h-3.5 w-3.5 mr-1" />
+                            Editar almacén
+                          </Button>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
@@ -527,6 +583,70 @@ export function HistoryContent() {
           </div>
         </>
       )}
+
+      <Dialog
+        open={Boolean(editMovement)}
+        onOpenChange={(open) => {
+          if (!open) setEditMovement(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Editar almacén del movimiento</DialogTitle>
+            <DialogDescription>
+              Corrige el almacén asignado para mantener el historial y el stock por ubicación consistentes.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="text-sm text-slate-600">
+              <p>
+                <span className="font-medium text-slate-800">Producto:</span>{" "}
+                {editMovement?.products?.name || "Producto eliminado"}
+              </p>
+              <p>
+                <span className="font-medium text-slate-800">Movimiento:</span>{" "}
+                {editMovement?.type} ({editMovement?.quantity})
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-700">Almacén</label>
+              <Select
+                value={editWarehouseId}
+                onValueChange={setEditWarehouseId}
+                disabled={isSavingWarehouse}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar almacén" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Sin almacén (solo stock global)</SelectItem>
+                  {warehouses.map((warehouse) => (
+                    <SelectItem key={warehouse.id} value={warehouse.id}>
+                      {warehouse.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setEditMovement(null)}
+              disabled={isSavingWarehouse}
+            >
+              Cancelar
+            </Button>
+            <Button type="button" onClick={handleSaveWarehouse} disabled={isSavingWarehouse}>
+              {isSavingWarehouse ? "Guardando..." : "Guardar cambios"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
