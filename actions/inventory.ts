@@ -1953,6 +1953,8 @@ const kitExitLineSchema = z.object({
 export async function registerKitExit(data: {
   kit_id: string;
   warehouse_id: string;
+  /** Fecha contable del movimiento (por defecto hoy). */
+  movement_date?: string;
   recipient?: string;
   notes?: string;
   lines: {
@@ -2189,13 +2191,18 @@ export async function registerKitExit(data: {
     const kitExitNote = `Salida por Kit: ${kit.name}${data.notes ? ` - ${data.notes}` : ""}`;
 
     const today = new Date().toISOString().split("T")[0];
+    const movementDateRaw = data.movement_date?.trim();
+    const movementDate =
+      movementDateRaw && movementDateRaw.length >= 10
+        ? movementDateRaw.slice(0, 10)
+        : today;
     const movements = kitProducts.map((kp) => {
       const l = lineByKp.get(kp.id)!;
       return {
         product_id: kp.product_id,
         type: "Salida" as const,
         quantity: kp.quantity,
-        movement_date: today,
+        movement_date: movementDate,
         organization_id: profile.organization_id,
         country_code: countryCode,
         created_by: user.id,

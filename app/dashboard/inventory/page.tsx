@@ -760,6 +760,7 @@ export default function InventoryPage() {
         open={isMovementSheetOpen}
         onOpenChange={setIsMovementSheetOpen}
         products={products}
+        kits={kits}
         onSuccess={() => {
           loadData();
           setIsMovementSheetOpen(false);
