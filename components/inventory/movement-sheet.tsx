@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo } from "react";
 import {
   ArrowDownCircle,
   ArrowUpCircle,
@@ -97,6 +97,10 @@ export function MovementSheet({
   const [salidaLotBalances, setSalidaLotBalances] = useState<LotBalance[]>([]);
   const [salidaLotKey, setSalidaLotKey] = useState("");
   const [isLoadingSalidaLots, setIsLoadingSalidaLots] = useState(false);
+  /** Almacenes donde este producto tiene stock > 0 (salidas deben elegir uno para trazar vencimiento). */
+  const [warehouseIdsWithStock, setWarehouseIdsWithStock] = useState<string[]>([]);
+
+  const productHasWarehouseStock = warehouseIdsWithStock.length > 0;
 
   useEffect(() => {
     if (open && movementType === "Entrada") {
@@ -147,7 +151,58 @@ export function MovementSheet({
   }
 
   useEffect(() => {
-    if (!open || movementType !== "Salida" || !productId || warehouseId === "__none__") {
+    if (!open || movementType !== "Salida" || !productId) {
+      setWarehouseIdsWithStock([]);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user || cancelled) return;
+
+      const { data: wsRows } = await supabase
+        .from("warehouse_stock")
+        .select("warehouse_id")
+        .eq("product_id", productId)
+        .gt("current_stock", 0);
+
+      const rawIds = [...new Set((wsRows || []).map((r) => r.warehouse_id))];
+      const allowed = new Set(warehouses.map((w) => w.id));
+      const ids =
+        warehouses.length > 0
+          ? rawIds.filter((id) => allowed.has(id))
+          : rawIds;
+
+      if (!cancelled) {
+        setWarehouseIdsWithStock(ids);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, movementType, productId, warehouses]);
+
+  useLayoutEffect(() => {
+    if (movementType !== "Salida" || !productHasWarehouseStock) return;
+    if (warehouseIdsWithStock.length !== 1) return;
+    if (warehouseId !== "__none__") return;
+    setWarehouseId(warehouseIdsWithStock[0]);
+  }, [movementType, productHasWarehouseStock, warehouseIdsWithStock, warehouseId]);
+
+  useEffect(() => {
+    if (!open || movementType !== "Salida" || !productId) {
+      setSalidaLotBalances([]);
+      setSalidaLotKey("");
+      setIsLoadingSalidaLots(false);
+      return;
+    }
+
+    if (productHasWarehouseStock && warehouseId === "__none__") {
       setSalidaLotBalances([]);
       setSalidaLotKey("");
       setIsLoadingSalidaLots(false);
@@ -178,14 +233,21 @@ export function MovementSheet({
       }
 
       const cc = profile.country_code || "MX";
-      const { data: movRows, error } = await supabase
+      let query = supabase
         .from("movements")
         .select("type, quantity, expiration_date, lot_number, created_at")
         .eq("organization_id", profile.organization_id)
         .eq("country_code", cc)
-        .eq("warehouse_id", warehouseId)
         .eq("product_id", productId)
         .order("created_at", { ascending: true });
+
+      if (warehouseId !== "__none__") {
+        query = query.eq("warehouse_id", warehouseId);
+      } else {
+        query = query.is("warehouse_id", null);
+      }
+
+      const { data: movRows, error } = await query;
 
       if (error) {
         if (!cancelled) {
@@ -215,7 +277,7 @@ export function MovementSheet({
     return () => {
       cancelled = true;
     };
-  }, [open, movementType, productId, warehouseId]);
+  }, [open, movementType, productId, warehouseId, productHasWarehouseStock]);
 
   const qtyNum = useMemo(() => {
     const n = parseInt(quantity, 10);
@@ -228,11 +290,14 @@ export function MovementSheet({
   }, [salidaLotBalances, qtyNum]);
 
   const needsSalidaLotPick =
-    movementType === "Salida" && warehouseId !== "__none__" && salidaLotBalances.length > 0;
+    movementType === "Salida" &&
+    productId &&
+    (!productHasWarehouseStock || warehouseId !== "__none__") &&
+    salidaLotBalances.length > 0;
 
   const salidaLotStepOk = useMemo(() => {
     if (movementType !== "Salida") return true;
-    if (warehouseId === "__none__") return true;
+    if (productHasWarehouseStock && warehouseId === "__none__") return false;
     if (salidaLotBalances.length === 0) return true;
     if (qtyNum <= 0) return false;
     if (salidaViableLots.length === 0) return false;
@@ -241,6 +306,7 @@ export function MovementSheet({
     );
   }, [
     movementType,
+    productHasWarehouseStock,
     warehouseId,
     salidaLotBalances.length,
     qtyNum,
@@ -315,6 +381,7 @@ export function MovementSheet({
     setWarehouseId("__none__");
     setSalidaLotBalances([]);
     setSalidaLotKey("");
+    setWarehouseIdsWithStock([]);
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -329,7 +396,7 @@ export function MovementSheet({
     if (movementType === "Entrada") {
       if (lotNumber) formData.append("lot_number", lotNumber);
       if (expirationDate) formData.append("expiration_date", expirationDate);
-    } else if (warehouseId !== "__none__" && salidaLotKey) {
+    } else if (salidaLotKey) {
       const { expirationDate: salidaExp, lotNumber: salidaLot } =
         decodeLotSelection(salidaLotKey);
       if (salidaExp) formData.append("expiration_date", salidaExp);
@@ -474,6 +541,62 @@ export function MovementSheet({
               )}
             </div>
 
+            {movementType === "Salida" && (
+              <div className="space-y-2">
+                <Label htmlFor="warehouse_salida">
+                  Almacén{productHasWarehouseStock ? " *" : ""}
+                </Label>
+                <Select
+                  value={warehouseId}
+                  onValueChange={setWarehouseId}
+                  disabled={isSubmitting || isLoadingWarehouses}
+                >
+                  <SelectTrigger id="warehouse_salida" className="h-12">
+                    <SelectValue
+                      placeholder={
+                        productHasWarehouseStock
+                          ? "De qué ubicación sale el stock"
+                          : "Sin almacén (stock global)"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {productHasWarehouseStock && warehouseIdsWithStock.length > 1 && (
+                      <SelectItem value="__none__" disabled className="opacity-60">
+                        Seleccioná un almacén…
+                      </SelectItem>
+                    )}
+                    {!productHasWarehouseStock && (
+                      <SelectItem value="__none__">Sin almacén (solo global)</SelectItem>
+                    )}
+                    {(productHasWarehouseStock
+                      ? warehouses.filter((w) => warehouseIdsWithStock.includes(w.id))
+                      : warehouses
+                    ).map((w) => (
+                      <SelectItem key={w.id} value={w.id}>
+                        <div className="flex items-center gap-2">
+                          <Warehouse className="h-4 w-4" />
+                          {w.name}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {productHasWarehouseStock && warehouseId === "__none__" && (
+                  <p className="text-sm text-amber-700 flex gap-1 items-start">
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                    Elegí el almacén para ver y elegir la fecha de vencimiento (mismo producto puede
+                    tener distintos vencimientos según el lote).
+                  </p>
+                )}
+                <p className="text-xs text-slate-500">
+                  {productHasWarehouseStock
+                    ? "Las cantidades por vencimiento se calculan solo para el almacén elegido."
+                    : "Sin stock en almacenes: se usan movimientos sin ubicación."}
+                </p>
+              </div>
+            )}
+
             {/* Cantidad */}
             <div className="space-y-2">
               <Label htmlFor="quantity">Cantidad *</Label>
@@ -510,35 +633,38 @@ export function MovementSheet({
               </p>
             </div>
 
-            {/* Almacén (opcional) */}
-            <div className="space-y-2">
-              <Label htmlFor="warehouse">Almacén</Label>
-              <Select
-                value={warehouseId}
-                onValueChange={setWarehouseId}
-                disabled={isSubmitting || isLoadingWarehouses}
-              >
-                <SelectTrigger id="warehouse" className="h-12">
-                  <SelectValue placeholder="Sin almacén (stock solo global)" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">Sin almacén (solo global)</SelectItem>
-                  {warehouses.map((w) => (
-                    <SelectItem key={w.id} value={w.id}>
-                      <div className="flex items-center gap-2">
-                        <Warehouse className="h-4 w-4" />
-                        {w.name}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-slate-500">
-                Si eliges un almacén, el movimiento actualiza también el stock en esa ubicación.
-              </p>
-            </div>
+            {movementType === "Entrada" && (
+              <div className="space-y-2">
+                <Label htmlFor="warehouse">Almacén</Label>
+                <Select
+                  value={warehouseId}
+                  onValueChange={setWarehouseId}
+                  disabled={isSubmitting || isLoadingWarehouses}
+                >
+                  <SelectTrigger id="warehouse" className="h-12">
+                    <SelectValue placeholder="Sin almacén (stock solo global)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Sin almacén (solo global)</SelectItem>
+                    {warehouses.map((w) => (
+                      <SelectItem key={w.id} value={w.id}>
+                        <div className="flex items-center gap-2">
+                          <Warehouse className="h-4 w-4" />
+                          {w.name}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-slate-500">
+                  Si eliges un almacén, el movimiento actualiza también el stock en esa ubicación.
+                </p>
+              </div>
+            )}
 
-            {movementType === "Salida" && warehouseId !== "__none__" && (
+            {movementType === "Salida" &&
+              productId &&
+              (!productHasWarehouseStock || warehouseId !== "__none__") && (
               <div className="space-y-2">
                 {isLoadingSalidaLots ? (
                   <p className="text-sm text-slate-500">Cargando vencimientos y lotes…</p>
@@ -585,8 +711,9 @@ export function MovementSheet({
                   </>
                 ) : (
                   <p className="text-xs text-slate-500">
-                    No hay movimientos con vencimiento/lote en este almacén para este producto;
-                    la salida no exige elegir lote.
+                    No hay historial con vencimiento/lote en esta ubicación para este producto; la
+                    salida no exige elegir lote. Si cargaste entradas sin fecha de vencimiento, todo
+                    el stock aparece como un solo lote al calcular saldos.
                   </p>
                 )}
               </div>

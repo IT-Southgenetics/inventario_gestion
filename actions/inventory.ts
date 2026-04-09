@@ -695,6 +695,63 @@ export async function registerMovement(formData: FormData) {
           }
         }
       }
+    } else if (validatedData.type === "Salida") {
+      const { data: wsAny } = await supabase
+        .from("warehouse_stock")
+        .select("warehouse_id")
+        .eq("product_id", validatedData.product_id)
+        .gt("current_stock", 0)
+        .limit(1);
+
+      if (wsAny && wsAny.length > 0) {
+        return {
+          error:
+            "Este producto tiene stock en al menos un almacén. Elegí el almacén en la salida para indicar el vencimiento y el lote de origen.",
+        };
+      }
+
+      const { data: lotMovRows, error: lotMovErr } = await supabase
+        .from("movements")
+        .select("type, quantity, expiration_date, lot_number, created_at")
+        .eq("organization_id", profile.organization_id)
+        .eq("country_code", profile.country_code || "MX")
+        .is("warehouse_id", null)
+        .eq("product_id", validatedData.product_id)
+        .order("created_at", { ascending: true });
+
+      if (!lotMovErr && lotMovRows && lotMovRows.length > 0) {
+        const inputs: LotMovementInput[] = lotMovRows.map((m) => ({
+          type: m.type as "Entrada" | "Salida",
+          quantity: m.quantity,
+          expiration_date: m.expiration_date,
+          lot_number: m.lot_number,
+          created_at: m.created_at,
+        }));
+        const balances = computeLotBalancesForProduct(inputs);
+
+        if (balances.some((b) => b.quantity > 0)) {
+          const viable = balances.filter((b) => b.quantity >= validatedData.quantity);
+          if (viable.length === 0) {
+            return {
+              error:
+                "Ningún lote con esa trazabilidad tiene stock suficiente para la cantidad indicada. Revisá el vencimiento/lote o la cantidad.",
+            };
+          }
+          const reqKey = lotStockBucketKey(
+            validatedData.expiration_date,
+            validatedData.lot_number
+          );
+          const matched = viable.find(
+            (b) => lotStockBucketKey(b.expirationDate, b.lotNumber) === reqKey
+          );
+          if (!matched) {
+            return {
+              error:
+                "Seleccioná el vencimiento y lote de origen de esta salida (debe coincidir con una entrada registrada).",
+            };
+          }
+        }
+      }
     }
 
     // Insertar movimiento (el trigger actualizará el stock automáticamente)
