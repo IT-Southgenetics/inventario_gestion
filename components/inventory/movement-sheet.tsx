@@ -767,7 +767,7 @@ export function MovementSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className={`w-full overflow-y-auto ${kitSalidaMode ? "sm:max-w-xl" : "sm:max-w-lg"}`}
+        className={`w-full overflow-y-auto ${movementType === "Salida" ? "sm:max-w-xl" : "sm:max-w-lg"}`}
       >
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
@@ -788,7 +788,7 @@ export function MovementSheet({
               ? "Registra una entrada de productos al inventario"
               : kitSalidaMode && resolvedKit
                 ? `Salida del kit «${resolvedKit.name}»: elegí almacén y lote/vencimiento por cada componente.`
-                : "Registra una salida de productos del inventario"}
+                : "Elegí almacén y cantidad; luego seleccioná vencimiento/lote de origen para esa ubicación."}
           </SheetDescription>
         </SheetHeader>
 
@@ -995,6 +995,88 @@ export function MovementSheet({
               </div>
             )}
 
+            {movementType === "Salida" &&
+              !kitSalidaMode &&
+              productId &&
+              (!productHasWarehouseStock || warehouseId !== "__none__") && (
+                <div className="rounded-lg border border-slate-200 p-4 space-y-4">
+                  <h4 className="text-sm font-semibold text-slate-700">
+                    Lote / vencimiento por producto
+                  </h4>
+                  {isLoadingSalidaLots ? (
+                    <p className="text-sm text-slate-500">Cargando lotes…</p>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="rounded-md border border-slate-100 bg-slate-50/80 p-3 space-y-2">
+                        <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-slate-800">
+                          <Package className="h-4 w-4 shrink-0 text-slate-400" />
+                          <span>{selectedProduct?.name ?? "Producto"}</span>
+                          <span className="text-slate-500 font-normal">
+                            — salir {qtyNum > 0 ? `${qtyNum} u.` : "…"}
+                          </span>
+                        </div>
+                        {salidaLotBalances.length > 0 ? (
+                          <>
+                            <div className="space-y-1">
+                              <Label className="text-xs text-slate-600">
+                                Origen (vencimiento / lote)
+                              </Label>
+                              <Select
+                                value={salidaLotKey || undefined}
+                                onValueChange={setSalidaLotKey}
+                                disabled={isSubmitting || salidaViableLots.length === 0}
+                              >
+                                <SelectTrigger className="h-10 bg-white">
+                                  <SelectValue
+                                    placeholder={
+                                      salidaViableLots.length === 0
+                                        ? qtyNum > 0
+                                          ? "Sin lote con stock suficiente"
+                                          : "Indicá la cantidad primero"
+                                        : "Elegir lote"
+                                    }
+                                  />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {salidaViableLots.map((l) => {
+                                    const k = encodeLotSelection(l.expirationDate, l.lotNumber);
+                                    return (
+                                      <SelectItem key={k} value={k}>
+                                        {formatLotLabel(l)}
+                                      </SelectItem>
+                                    );
+                                  })}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            {salidaViableLots.length === 0 && (
+                              <p className="text-xs text-amber-700 flex items-center gap-1">
+                                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                                {qtyNum > 0
+                                  ? `Ningún lote tiene ${qtyNum} u. disponibles en este almacén.`
+                                  : "Indicá una cantidad válida para ver los lotes disponibles."}
+                              </p>
+                            )}
+                            {qtyNum > 0 && salidaViableLots.length > 0 && (
+                              <p className="text-xs text-slate-600">
+                                Unidades a descontar:{" "}
+                                <span className="font-semibold tabular-nums">{qtyNum}</span>
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-xs text-slate-500">
+                            No hay historial con vencimiento/lote en esta ubicación para este
+                            producto; la salida no exige elegir lote. Si cargaste entradas sin fecha de
+                            vencimiento, el stock se descuenta sin trazabilidad por lote.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
             {/* Fecha del Movimiento */}
             <div className="space-y-2">
               <Label htmlFor="movement_date">Fecha del Movimiento *</Label>
@@ -1050,7 +1132,7 @@ export function MovementSheet({
               !kitConflictMessage && (
                 <div className="rounded-lg border border-slate-200 p-4 space-y-4">
                   <h4 className="text-sm font-semibold text-slate-700">
-                    Lote / vencimiento por componente
+                    Lote / vencimiento por producto
                   </h4>
                   {isLoadingKitLots ? (
                     <p className="text-sm text-slate-500">Cargando lotes…</p>
@@ -1118,6 +1200,13 @@ export function MovementSheet({
                                 No hay movimientos trazables en este almacén para este producto.
                               </p>
                             )}
+                            {viable.length > 0 && (
+                              <p className="text-xs text-slate-600">
+                                Unidades a descontar:{" "}
+                                <span className="font-semibold tabular-nums">{kp.quantity}</span>{" "}
+                                <span className="text-slate-500">(fijado por el kit)</span>
+                              </p>
+                            )}
                           </div>
                         );
                       })}
@@ -1125,64 +1214,6 @@ export function MovementSheet({
                   )}
                 </div>
               )}
-
-            {movementType === "Salida" &&
-              !kitSalidaMode &&
-              productId &&
-              (!productHasWarehouseStock || warehouseId !== "__none__") && (
-              <div className="space-y-2">
-                {isLoadingSalidaLots ? (
-                  <p className="text-sm text-slate-500">Cargando vencimientos y lotes…</p>
-                ) : salidaLotBalances.length > 0 ? (
-                  <>
-                    <Label htmlFor="salida_lot">
-                      Vencimiento / lote de origen *
-                    </Label>
-                    {salidaViableLots.length > 0 ? (
-                      <Select
-                        value={salidaLotKey}
-                        onValueChange={setSalidaLotKey}
-                        disabled={isSubmitting}
-                        required
-                      >
-                        <SelectTrigger id="salida_lot" className="h-12">
-                          <SelectValue placeholder="Elegir vencimiento y lote" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {salidaViableLots.map((l) => {
-                            const k = encodeLotSelection(l.expirationDate, l.lotNumber);
-                            return (
-                              <SelectItem key={k} value={k}>
-                                {formatLotLabel(l)}
-                              </SelectItem>
-                            );
-                          })}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <p className="text-sm text-orange-600 flex items-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-3 py-2">
-                        <AlertTriangle className="h-4 w-4 shrink-0" />
-                        {qtyNum > 0
-                          ? "Ningún lote en este almacén tiene stock suficiente para la cantidad indicada."
-                          : "Indicá una cantidad válida para ver los lotes disponibles."}
-                      </p>
-                    )}
-                    {salidaViableLots.length > 0 && (
-                      <p className="text-xs text-slate-500">
-                        Mismo producto puede tener varios vencimientos; la salida debe indicar de
-                        cuál se descuenta el stock en este almacén.
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p className="text-xs text-slate-500">
-                    No hay historial con vencimiento/lote en esta ubicación para este producto; la
-                    salida no exige elegir lote. Si cargaste entradas sin fecha de vencimiento, todo
-                    el stock aparece como un solo lote al calcular saldos.
-                  </p>
-                )}
-              </div>
-            )}
 
             {/* Campos condicionales para Entrada */}
             {movementType === "Entrada" && (
